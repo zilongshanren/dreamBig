@@ -1,0 +1,24 @@
+{
+  "genres": {
+    "idle": { "iaa_score": 95, "label_zh": "放置", "label_en": "Idle" },
+    "merge": { "iaa_score": 92, "label_zh": "合成", "label_en": "Merge" },
+    "match3": { "iaa_score": 90, "label_zh": "三消", "label_en": "Match-3" },
+    "puzzle": { "iaa_score": 85, "label_zh": "益智", "label_en": "Puzzle" },
+    "casual_action": { "iaa_score": 82, "label_zh": "休闲动作", "label_en": "Casual Action" },
+    "runner": { "iaa_score": 80, "label_zh": "跑酷", "label_en": "Runner" },
+    "tower_defense": { "iaa_score": 78, "label_zh": "塔防", "label_en": "Tower Defense" },
+    "simulation": { "iaa_score": 75, "label_zh": "模拟", "label_en": "Simulation" },
+    "word": { "iaa_score": 75, "label_zh": "文字", "label_en": "Word" },
+    "trivia": { "iaa_score": 72, "label_zh": "问答", "label_en": "Trivia" },
+    "arcade": { "iaa_score": 70, "label_zh": "街机", "label_en": "Arcade" },
+    "board": { "iaa_score": 68, "label_zh": "棋牌", "label_en": "Board" },
+    "card": { "iaa_score": 65, "label_zh": "卡牌", "label_en": "Card" },
+    "sports": { "iaa_score": 60, "label_zh": "体育", "label_en": "Sports" },
+    "racing": { "iaa_score": 58, "label_zh": "竞速", "label_en": "Racing" },
+    "strategy": { "iaa_score": 45, "label_zh": "策略", "label_en": "Strategy" },
+    "rpg": { "iaa_score": 35, "label_zh": "角色扮演", "label_en": "RPG" },
+    "adventure": { "iaa_score": 40, "label_zh": "冒险", "label_en": "Adventure" },
+    "shooter": { "iaa_score": 30, "label_zh": "射击", "label_en": "Shooter" },
+    "moba": { "iaa_score": 20, "label_zh": "MOBA", "label_en": "MOBA" }
+  }
+}

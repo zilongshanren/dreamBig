@@ -1,0 +1,29 @@
+{
+  "version": "v1",
+  "weights": {
+    "ranking_velocity": 0.25,
+    "genre_fit": 0.20,
+    "social_buzz": 0.15,
+    "cross_platform": 0.15,
+    "rating_quality": 0.10,
+    "competition_gap": 0.10,
+    "ad_activity": 0.05
+  },
+  "thresholds": {
+    "high_potential": 75,
+    "medium_potential": 50,
+    "low_potential": 25
+  },
+  "ranking_velocity_params": {
+    "window_days": 14,
+    "min_data_points": 3
+  },
+  "social_buzz_params": {
+    "platform_weights": {
+      "douyin": 1.0,
+      "bilibili": 0.8,
+      "tiktok": 0.9,
+      "youtube": 0.7
+    }
+  }
+}

@@ -1,0 +1,111 @@
+services:
+  # PostgreSQL database
+  db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: dreambig
+      POSTGRES_PASSWORD: dreambig
+      POSTGRES_DB: dreambig
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./scripts/init-db.sql:/docker-entrypoint-initdb.d/init.sql
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U dreambig"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  # Redis for job queue + caching
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    volumes:
+      - redisdata:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  # Next.js web application
+  web:
+    build:
+      context: ./web
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    environment:
+      DATABASE_URL: postgresql://dreambig:dreambig@db:5432/dreambig
+      REDIS_URL: redis://redis:6379/0
+      NEXT_PUBLIC_APP_URL: ${NEXT_PUBLIC_APP_URL:-http://localhost:3000}
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  # Python scraper workers
+  scraper:
+    build:
+      context: ./workers
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    command: rq worker --url redis://redis:6379/0 --path /app
+    environment:
+      DATABASE_URL: postgresql://dreambig:dreambig@db:5432/dreambig
+      REDIS_URL: redis://redis:6379/0
+      SCRAPE_PROXY_URL: ${SCRAPE_PROXY_URL:-}
+      TIKHUB_API_KEY: ${TIKHUB_API_KEY:-}
+      APPGROWING_API_KEY: ${APPGROWING_API_KEY:-}
+      STEAM_API_KEY: ${STEAM_API_KEY:-}
+      FEISHU_WEBHOOK_URL: ${FEISHU_WEBHOOK_URL:-}
+      NEXT_PUBLIC_APP_URL: ${NEXT_PUBLIC_APP_URL:-http://localhost:3000}
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    deploy:
+      replicas: 2
+
+  # Job scheduler
+  scheduler:
+    build:
+      context: ./workers
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    command: python -m src.scheduler
+    environment:
+      DATABASE_URL: postgresql://dreambig:dreambig@db:5432/dreambig
+      REDIS_URL: redis://redis:6379/0
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  # Caddy reverse proxy (auto HTTPS)
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      - web
+
+volumes:
+  pgdata:
+  redisdata:
+  caddy_data:
+  caddy_config:

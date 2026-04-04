@@ -1,0 +1,212 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ============================================================
+// Core game entity (deduplicated across platforms)
+// ============================================================
+model Game {
+  id             Int       @id @default(autoincrement())
+  nameZh         String?   @map("name_zh")
+  nameEn         String?   @map("name_en")
+  developer      String?
+  genre          String?
+  subGenres      String[]  @map("sub_genres")
+  gameplayTags   String[]  @map("gameplay_tags")
+  iaaSuitability Int       @default(0) @map("iaa_suitability")
+  metadata       Json      @default("{}")
+  thumbnailUrl   String?   @map("thumbnail_url")
+  createdAt      DateTime  @default(now()) @map("created_at")
+  updatedAt      DateTime  @default(now()) @updatedAt @map("updated_at")
+
+  platformListings PlatformListing[]
+  socialSignals    SocialSignal[]
+  adIntelligence   AdIntelligence[]
+  potentialScores  PotentialScore[]
+  alertEvents      AlertEvent[]
+  gameTags         GameTag[]
+
+  @@map("games")
+}
+
+// ============================================================
+// Platform-specific listing (one per game per platform)
+// ============================================================
+model PlatformListing {
+  id          Int       @id @default(autoincrement())
+  gameId      Int       @map("game_id")
+  platform    String    // google_play, app_store, taptap, steam, etc.
+  platformId  String    @map("platform_id")
+  platformUrl String?   @map("platform_url")
+  name        String
+  rating      Decimal?  @db.Decimal(3, 2)
+  ratingCount Int?      @map("rating_count")
+  downloadEst BigInt?   @map("download_est")
+  releaseDate DateTime? @map("release_date") @db.Date
+  lastUpdated DateTime? @default(now()) @map("last_updated") @db.Date
+  metadata    Json      @default("{}")
+
+  game              Game               @relation(fields: [gameId], references: [id])
+  rankingSnapshots  RankingSnapshot[]
+
+  @@unique([platform, platformId])
+  @@map("platform_listings")
+}
+
+// ============================================================
+// Ranking snapshots (time-series, fastest growing table)
+// ============================================================
+model RankingSnapshot {
+  id                Int      @id @default(autoincrement())
+  platformListingId Int      @map("platform_listing_id")
+  chartType         String   @map("chart_type") // top_free, top_grossing, trending, new
+  region            String   @default("CN")
+  rankPosition      Int      @map("rank_position") @db.SmallInt
+  previousRank      Int?     @map("previous_rank") @db.SmallInt
+  rankChange        Int?     @map("rank_change") @db.SmallInt
+  snapshotDate      DateTime @map("snapshot_date") @db.Date
+
+  platformListing PlatformListing @relation(fields: [platformListingId], references: [id])
+
+  @@unique([platformListingId, chartType, region, snapshotDate])
+  @@index([snapshotDate(sort: Desc)])
+  @@index([platformListingId, snapshotDate(sort: Desc)])
+  @@map("ranking_snapshots")
+}
+
+// ============================================================
+// Social media signals
+// ============================================================
+model SocialSignal {
+  id            Int      @id @default(autoincrement())
+  gameId        Int      @map("game_id")
+  platform      String   // douyin, bilibili, tiktok, youtube
+  videoCount    Int      @default(0) @map("video_count")
+  viewCount     BigInt   @default(0) @map("view_count")
+  likeCount     BigInt   @default(0) @map("like_count")
+  hashtagVolume Int      @default(0) @map("hashtag_volume")
+  signalDate    DateTime @map("signal_date") @db.Date
+  metadata      Json     @default("{}")
+
+  game Game @relation(fields: [gameId], references: [id])
+
+  @@unique([gameId, platform, signalDate])
+  @@map("social_signals")
+}
+
+// ============================================================
+// Ad intelligence
+// ============================================================
+model AdIntelligence {
+  id              Int       @id @default(autoincrement())
+  gameId          Int       @map("game_id")
+  source          String    // facebook_ad_library, appgrowing
+  activeCreatives Int       @default(0) @map("active_creatives")
+  markets         String[]
+  creativeTypes   String[]  @map("creative_types")
+  estimatedSpend  String?   @map("estimated_spend")
+  firstSeen       DateTime? @map("first_seen") @db.Date
+  lastSeen        DateTime? @map("last_seen") @db.Date
+  signalDate      DateTime  @map("signal_date") @db.Date
+  metadata        Json      @default("{}")
+
+  game Game @relation(fields: [gameId], references: [id])
+
+  @@unique([gameId, source, signalDate])
+  @@map("ad_intelligence")
+}
+
+// ============================================================
+// Potential scores (computed daily)
+// ============================================================
+model PotentialScore {
+  id               Int      @id @default(autoincrement())
+  gameId           Int      @map("game_id")
+  overallScore     Int      @map("overall_score") @db.SmallInt
+  rankingVelocity  Int      @default(0) @map("ranking_velocity") @db.SmallInt
+  genreFit         Int      @default(0) @map("genre_fit") @db.SmallInt
+  socialBuzz       Int      @default(0) @map("social_buzz") @db.SmallInt
+  crossPlatform    Int      @default(0) @map("cross_platform") @db.SmallInt
+  ratingQuality    Int      @default(0) @map("rating_quality") @db.SmallInt
+  competitionGap   Int      @default(0) @map("competition_gap") @db.SmallInt
+  adActivity       Int      @default(0) @map("ad_activity") @db.SmallInt
+  algorithmVersion String   @default("v1") @map("algorithm_version")
+  scoredAt         DateTime @map("scored_at") @db.Date
+
+  game Game @relation(fields: [gameId], references: [id])
+
+  @@unique([gameId, scoredAt])
+  @@map("potential_scores")
+}
+
+// ============================================================
+// Alert rules
+// ============================================================
+model Alert {
+  id            Int      @id @default(autoincrement())
+  name          String
+  conditions    Json     // {"min_score": 70, "genres": ["puzzle","idle"]}
+  notifyChannel String   @default("feishu") @map("notify_channel")
+  webhookUrl    String?  @map("webhook_url")
+  isActive      Boolean  @default(true) @map("is_active")
+  cooldownHours Int      @default(24) @map("cooldown_hours")
+  createdAt     DateTime @default(now()) @map("created_at")
+
+  alertEvents AlertEvent[]
+
+  @@map("alerts")
+}
+
+// ============================================================
+// Alert events (triggered alerts history)
+// ============================================================
+model AlertEvent {
+  id           Int      @id @default(autoincrement())
+  alertId      Int      @map("alert_id")
+  gameId       Int      @map("game_id")
+  score        Int?     @db.SmallInt
+  triggeredAt  DateTime @default(now()) @map("triggered_at")
+  acknowledged Boolean  @default(false)
+
+  alert Alert @relation(fields: [alertId], references: [id])
+  game  Game  @relation(fields: [gameId], references: [id])
+
+  @@map("alert_events")
+}
+
+// ============================================================
+// Game tags (manual curation)
+// ============================================================
+model GameTag {
+  gameId  Int      @map("game_id")
+  tag     String   // watchlist, contacted, licensed, rejected, porting
+  note    String?
+  taggedAt DateTime @default(now()) @map("tagged_at")
+
+  game Game @relation(fields: [gameId], references: [id])
+
+  @@id([gameId, tag])
+  @@map("game_tags")
+}
+
+// ============================================================
+// Scrape job tracking
+// ============================================================
+model ScrapeJob {
+  id           Int       @id @default(autoincrement())
+  platform     String
+  jobType      String    @map("job_type") // rankings, details, social, ads
+  status       String    @default("pending") // pending, running, success, failed
+  itemsScraped Int       @default(0) @map("items_scraped")
+  errorMessage String?   @map("error_message")
+  startedAt    DateTime? @map("started_at")
+  finishedAt   DateTime? @map("finished_at")
+  retryCount   Int       @default(0) @map("retry_count")
+
+  @@map("scrape_jobs")
+}

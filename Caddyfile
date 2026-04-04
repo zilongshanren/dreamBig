@@ -1,0 +1,10 @@
+# For local development, use localhost
+# For production, replace with your domain: dreambig.yourdomain.com
+:80 {
+	reverse_proxy web:3000
+}
+
+# Production config (uncomment and replace domain):
+# dreambig.yourdomain.com {
+#     reverse_proxy web:3000
+# }

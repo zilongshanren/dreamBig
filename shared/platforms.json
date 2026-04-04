@@ -1,0 +1,102 @@
+{
+  "platforms": {
+    "google_play": {
+      "label": "Google Play",
+      "label_zh": "Google Play",
+      "rate_limit_seconds": 2,
+      "scrape_frequency": "2x_daily",
+      "difficulty": "low",
+      "method": "google-play-scraper npm / httpx"
+    },
+    "app_store": {
+      "label": "App Store",
+      "label_zh": "App Store",
+      "rate_limit_seconds": 2,
+      "scrape_frequency": "2x_daily",
+      "difficulty": "low",
+      "method": "iTunes Search API + RSS Feed"
+    },
+    "taptap": {
+      "label": "TapTap",
+      "label_zh": "TapTap",
+      "rate_limit_seconds": 3,
+      "scrape_frequency": "1x_daily",
+      "difficulty": "medium",
+      "method": "Playwright"
+    },
+    "steam": {
+      "label": "Steam",
+      "label_zh": "Steam",
+      "rate_limit_seconds": 1,
+      "scrape_frequency": "1x_daily",
+      "difficulty": "low",
+      "method": "Steam Web API + SteamSpy API"
+    },
+    "wechat_mini": {
+      "label": "WeChat Mini Games",
+      "label_zh": "微信小游戏",
+      "rate_limit_seconds": 5,
+      "scrape_frequency": "1x_daily",
+      "difficulty": "high",
+      "method": "Playwright + WeChat Session"
+    },
+    "poki": {
+      "label": "Poki",
+      "label_zh": "Poki",
+      "rate_limit_seconds": 2,
+      "scrape_frequency": "1x_daily",
+      "difficulty": "low",
+      "method": "httpx + BeautifulSoup"
+    },
+    "crazygames": {
+      "label": "CrazyGames",
+      "label_zh": "CrazyGames",
+      "rate_limit_seconds": 2,
+      "scrape_frequency": "1x_daily",
+      "difficulty": "low",
+      "method": "httpx + BeautifulSoup"
+    },
+    "4399": {
+      "label": "4399",
+      "label_zh": "4399",
+      "rate_limit_seconds": 3,
+      "scrape_frequency": "1x_daily",
+      "difficulty": "medium",
+      "method": "httpx + BeautifulSoup"
+    }
+  },
+  "social_platforms": {
+    "douyin": {
+      "label": "Douyin",
+      "label_zh": "抖音",
+      "method": "TikHub API"
+    },
+    "bilibili": {
+      "label": "Bilibili",
+      "label_zh": "B站",
+      "method": "Bilibili API"
+    },
+    "tiktok": {
+      "label": "TikTok",
+      "label_zh": "TikTok",
+      "method": "TikHub API"
+    },
+    "youtube": {
+      "label": "YouTube",
+      "label_zh": "YouTube",
+      "method": "YouTube Data API"
+    }
+  },
+  "ad_platforms": {
+    "facebook_ad_library": {
+      "label": "Facebook Ad Library",
+      "label_zh": "Facebook 广告库",
+      "method": "Public API (free)"
+    },
+    "appgrowing": {
+      "label": "AppGrowing",
+      "label_zh": "AppGrowing",
+      "method": "Paid API"
+    }
+  }
+}
