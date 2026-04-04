@@ -1,4 +1,4 @@
-"""Apple App Store scraper using the iTunes RSS Feed and Search API."""
+"""Apple App Store scraper using the iTunes RSS Feed and Lookup API."""
 
 from __future__ import annotations
 
@@ -9,10 +9,15 @@ from .base import BaseScraper, GameDetails, RankingEntry
 
 logger = logging.getLogger(__name__)
 
-# iTunes RSS feed for top charts - free, official, no authentication needed
-# https://rss.applemarketingtools.com/
-RSS_FEED_URL = "https://rss.applemarketingtools.com/api/v2/{region}/apps/top-free/{limit}/games.json"
-RSS_FEED_PAID_URL = "https://rss.applemarketingtools.com/api/v2/{region}/apps/top-paid/{limit}/games.json"
+# V1 iTunes RSS feed — supports genre filtering for games (genre=6014)
+# Max effective limit is 100 entries
+RSS_BASE = "https://itunes.apple.com/{region}/rss/{chart}/limit={limit}/genre=6014/json"
+
+CHART_TYPE_MAP = {
+    "top_free": "topfreeapplications",
+    "top_paid": "toppaidapplications",
+    "top_grossing": "topgrossingapplications",
+}
 
 # iTunes Search API
 SEARCH_API_URL = "https://itunes.apple.com/lookup"
@@ -29,29 +34,23 @@ REGION_MAP = {
     "IN": "in",
 }
 
-CHART_TYPE_MAP = {
-    "top_free": RSS_FEED_URL,
-    "top_paid": RSS_FEED_PAID_URL,
-}
-
 
 class AppStoreScraper(BaseScraper):
     platform = "app_store"
-    rate_limit = 1.0  # Apple's API is generous
+    rate_limit = 1.0
 
     async def scrape_rankings(
         self, chart_type: str = "top_free", region: str = "US"
     ) -> list[RankingEntry]:
-        """Scrape App Store rankings using the official RSS feed.
+        """Scrape App Store game rankings using the iTunes v1 RSS feed.
 
-        The Apple Marketing Tools RSS feed is free, reliable, and
-        returns up to 200 apps per request in JSON format.
+        Uses genre=6014 to filter for games only. Max 100 results.
         """
         client = await self.get_client()
         region_code = REGION_MAP.get(region, region.lower())
+        chart = CHART_TYPE_MAP.get(chart_type, "topfreeapplications")
 
-        url_template = CHART_TYPE_MAP.get(chart_type, RSS_FEED_URL)
-        url = url_template.format(region=region_code, limit=200)
+        url = RSS_BASE.format(region=region_code, chart=chart, limit=100)
 
         resp = await client.get(url)
         resp.raise_for_status()
@@ -59,16 +58,44 @@ class AppStoreScraper(BaseScraper):
 
         entries: list[RankingEntry] = []
         feed = data.get("feed", {})
-        results = feed.get("results", [])
+        results = feed.get("entry", [])
 
         for rank, app in enumerate(results, 1):
-            app_id = app.get("id", "")
-            name = app.get("name", "")
-            artist = app.get("artistName", "")
-            icon = app.get("artworkUrl100", "")
-            genres = app.get("genres", [])
-            genre = genres[0].get("name") if genres else None
-            url_val = app.get("url", "")
+            # V1 RSS format uses different field names than v2
+            app_id = ""
+            id_attrs = app.get("id", {}).get("attributes", {})
+            app_id = id_attrs.get("im:id", "")
+
+            name = ""
+            name_field = app.get("im:name", {})
+            if isinstance(name_field, dict):
+                name = name_field.get("label", "")
+
+            artist = ""
+            artist_field = app.get("im:artist", {})
+            if isinstance(artist_field, dict):
+                artist = artist_field.get("label", "")
+
+            # Category / genre
+            genre = None
+            category = app.get("category", {})
+            if isinstance(category, dict):
+                cat_attrs = category.get("attributes", {})
+                genre = cat_attrs.get("label")
+
+            # Icon URL — pick the largest image
+            icon_url = None
+            images = app.get("im:image", [])
+            if images:
+                last_img = images[-1]
+                icon_url = last_img.get("label") if isinstance(last_img, dict) else None
+
+            # App Store URL
+            url_val = ""
+            link = app.get("link", {})
+            if isinstance(link, dict):
+                link_attrs = link.get("attributes", {})
+                url_val = link_attrs.get("href", "")
 
             entries.append(
                 RankingEntry(
@@ -77,9 +104,9 @@ class AppStoreScraper(BaseScraper):
                     rank_position=rank,
                     chart_type=chart_type,
                     region=region,
-                    developer=artist,
+                    developer=artist or None,
                     genre=genre,
-                    icon_url=icon,
+                    icon_url=icon_url,
                     url=url_val,
                 )
             )
@@ -87,10 +114,7 @@ class AppStoreScraper(BaseScraper):
         return entries
 
     async def scrape_game_details(self, platform_id: str) -> GameDetails | None:
-        """Scrape game details using the iTunes Lookup API.
-
-        Free official API, no authentication required.
-        """
+        """Scrape game details using the iTunes Lookup API."""
         client = await self.get_client()
         params = {"id": platform_id, "entity": "software"}
 
@@ -104,7 +128,6 @@ class AppStoreScraper(BaseScraper):
 
         app = results[0]
 
-        # Parse release date
         release_date = None
         release_str = app.get("releaseDate", "")
         if release_str:
@@ -113,7 +136,6 @@ class AppStoreScraper(BaseScraper):
             except ValueError:
                 pass
 
-        # Parse genres
         genres = app.get("genres", [])
         genre = genres[0] if genres else None
         sub_genres = genres[1:] if len(genres) > 1 else []

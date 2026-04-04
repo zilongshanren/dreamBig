@@ -91,7 +91,10 @@ def run_scrape_job(platform: str, chart_type: str, region: str = "CN"):
             pass
         raise
     finally:
-        asyncio.run(scraper.close())
+        try:
+            asyncio.run(scraper.close())
+        except RuntimeError:
+            pass
 
 
 def run_scoring():

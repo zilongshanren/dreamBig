@@ -9,10 +9,9 @@ from .base import BaseScraper, GameDetails, RankingEntry
 
 logger = logging.getLogger(__name__)
 
-# TapTap web API endpoints (discovered by inspecting network traffic)
-TAPTAP_TOP_URL = "https://www.taptap.cn/webapiv2/ranking/v2/list"
+# TapTap web API endpoints
+TAPTAP_TOP_URL = "https://www.taptap.cn/webapiv2/app-top/v2/hits"
 TAPTAP_DETAIL_URL = "https://www.taptap.cn/webapiv2/app/v4/detail"
-TAPTAP_SEARCH_URL = "https://www.taptap.cn/webapiv2/search/app/v2"
 
 # Chart types available on TapTap
 CHART_TYPE_MAP = {
@@ -22,11 +21,9 @@ CHART_TYPE_MAP = {
     "sell": "sell",     # 热卖榜
 }
 
-# Headers required by TapTap API
+# X-UA header is mandatory for TapTap API
 TAPTAP_HEADERS = {
-    "X-Rpc-Language": "zh-CN",
-    "Referer": "https://www.taptap.cn/",
-    "Accept": "application/json",
+    "X-UA": "V=1&PN=WebApp&LANG=zh_CN&VN_CODE=102&LOC=CN&PLT=PC&DS=Android&UID=0&DT=PC&OS=Windows&OSV=10",
 }
 
 
@@ -46,16 +43,18 @@ class TapTapScraper(BaseScraper):
         entries: list[RankingEntry] = []
         tt_type = CHART_TYPE_MAP.get(chart_type, "hot")
 
-        # TapTap paginates with 'from' parameter, 20 items per page
-        for page_from in range(0, 200, 20):
+        # TapTap paginates with 'from' parameter, max 15 items per page
+        for page_from in range(0, 150, 15):
             await self.throttle()
 
             params = {
                 "type_name": tt_type,
                 "from": page_from,
-                "limit": 20,
-                "X-UA": "V=1&PN=WebApp&LANG=zh_CN&VN_CODE=102",
+                "limit": 15,
             }
+            # Genre-specific rankings require platform param
+            if tt_type in ("new", "action", "strategy", "idle", "casual", "roguelike"):
+                params["platform"] = "android"
 
             try:
                 resp = await client.get(
@@ -127,7 +126,6 @@ class TapTapScraper(BaseScraper):
         client = await self.get_client()
         params = {
             "id": platform_id,
-            "X-UA": "V=1&PN=WebApp&LANG=zh_CN&VN_CODE=102",
         }
 
         try:
