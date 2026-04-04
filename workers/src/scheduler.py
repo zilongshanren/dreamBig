@@ -66,8 +66,8 @@ def main():
     scheduler = BlockingScheduler()
 
     # === Morning run: 06:00 HKT ===
-    # Google Play rankings (multiple regions)
-    for region in ["CN", "US", "JP"]:
+    # Google Play rankings (multiple regions, CN excluded - no Google Play in China)
+    for region in ["US", "JP", "KR"]:
         scheduler.add_job(
             enqueue_scrape,
             "cron",
@@ -117,12 +117,13 @@ def main():
     )
 
     # === Afternoon run: 14:00 HKT (2nd daily for major platforms) ===
-    for region in ["CN", "US"]:
+    for region in ["US", "JP"]:
         scheduler.add_job(
             enqueue_scrape, "cron", hour=14, minute=0,
             args=["google_play", "top_free", region],
             id=f"gp_top_free_{region}_pm",
         )
+    for region in ["CN", "US"]:
         scheduler.add_job(
             enqueue_scrape, "cron", hour=14, minute=5,
             args=["app_store", "top_free", region],

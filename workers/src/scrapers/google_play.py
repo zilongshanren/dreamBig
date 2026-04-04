@@ -66,7 +66,7 @@ class GooglePlayScraper(BaseScraper):
         """Scrape Google Play game rankings.
 
         Uses the top charts page and parses the HTML response.
-        Falls back to the collections API if the page structure changes.
+        Rejects redirects to prevent scraping non-game apps.
         """
         client = await self.get_client()
         gl = REGION_MAP.get(region, region.lower())
@@ -77,7 +77,17 @@ class GooglePlayScraper(BaseScraper):
         url = f"https://play.google.com/store/apps/top/category/{category}"
         params = {"gl": gl, "hl": hl}
 
-        resp = await client.get(url, params=params)
+        # Don't follow redirects — a 302 means the GAME category page
+        # is unavailable for this region and we'd land on the general apps page
+        resp = await client.get(url, params=params, follow_redirects=False)
+
+        if resp.status_code in (301, 302, 303, 307, 308):
+            logger.warning(
+                f"[google_play] GAME category page redirected for region {region}, "
+                f"skipping to avoid scraping non-game apps"
+            )
+            return []
+
         resp.raise_for_status()
 
         return self._parse_rankings_page(resp.text, chart_type, region)
