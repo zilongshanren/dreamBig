@@ -50,6 +50,12 @@ def enqueue_alerts():
     logger.info("Enqueued alerts job")
 
 
+def enqueue_fetch_details():
+    """Enqueue game detail/screenshot fetching."""
+    queue.enqueue("src.worker.run_fetch_details", job_timeout="60m")
+    logger.info("Enqueued game details fetch job")
+
+
 def enqueue_social_signals():
     """Enqueue social media signal collection."""
     queue.enqueue("src.worker.run_social_signals", job_timeout="30m")
@@ -129,6 +135,12 @@ def main():
             args=["app_store", "top_free", region],
             id=f"as_top_free_{region}_pm",
         )
+
+    # === 06:45: Fetch game details/screenshots for new games ===
+    scheduler.add_job(
+        enqueue_fetch_details, "cron", hour=6, minute=45,
+        id="fetch_details",
+    )
 
     # === 07:00: Post-scrape processing ===
     scheduler.add_job(

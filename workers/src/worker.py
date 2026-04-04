@@ -203,15 +203,98 @@ def run_ad_intel():
     logger.info("Ad intel collection complete")
 
 
+def run_fetch_details():
+    """Fetch game details (screenshots, descriptions) for games missing them."""
+    logger.info("Starting game details fetch")
+    import json
+
+    with psycopg.connect(DB_URL) as conn:
+        # Find games without screenshots in metadata
+        games = conn.execute(
+            """
+            SELECT g.id, pl.platform, pl.platform_id
+            FROM games g
+            JOIN platform_listings pl ON g.id = pl.game_id
+            WHERE g.metadata::text = '{}'
+               OR g.metadata->>'screenshots' IS NULL
+            ORDER BY g.id
+            """
+        ).fetchall()
+
+        if not games:
+            logger.info("All games already have details")
+            return
+
+        logger.info(f"Fetching details for {len(games)} game-platform pairs")
+
+        # Group by platform to reuse scraper instances
+        by_platform: dict[str, list[tuple[int, str]]] = {}
+        for game_id, platform, platform_id in games:
+            by_platform.setdefault(platform, []).append((game_id, platform_id))
+
+        total = 0
+        for platform, items in by_platform.items():
+            if platform not in SCRAPER_MAP:
+                continue
+
+            scraper = _get_scraper(platform)
+            for game_id, platform_id in items:
+                try:
+                    details = asyncio.run(scraper.scrape_game_details(platform_id))
+                    if not details:
+                        continue
+
+                    # Build metadata update
+                    meta = {}
+                    if details.screenshots:
+                        meta["screenshots"] = details.screenshots[:5]
+                    if details.description:
+                        meta["description"] = details.description
+                    if details.icon_url:
+                        meta["icon_url"] = details.icon_url
+
+                    if meta:
+                        conn.execute(
+                            """
+                            UPDATE games SET
+                                metadata = metadata || %s::jsonb,
+                                thumbnail_url = COALESCE(thumbnail_url, %s)
+                            WHERE id = %s
+                            """,
+                            (json.dumps(meta), details.icon_url, game_id),
+                        )
+                        conn.commit()
+                        total += 1
+                        logger.info(
+                            f"Updated details for game #{game_id} "
+                            f"({len(details.screenshots)} screenshots)"
+                        )
+
+                except Exception as e:
+                    logger.warning(
+                        f"Detail fetch failed for {platform}/{platform_id}: {e}"
+                    )
+
+            try:
+                asyncio.run(scraper.close())
+            except RuntimeError:
+                pass
+
+        logger.info(f"Details fetch complete: {total} games updated")
+
+
 if __name__ == "__main__":
     # For local testing: run a single scrape
     import sys
 
-    if len(sys.argv) >= 3:
+    if len(sys.argv) >= 2 and sys.argv[1] == "fetch_details":
+        run_fetch_details()
+    elif len(sys.argv) >= 3:
         platform = sys.argv[1]
         chart_type = sys.argv[2]
         region = sys.argv[3] if len(sys.argv) > 3 else "US"
         run_scrape_job(platform, chart_type, region)
     else:
         print("Usage: python -m src.worker <platform> <chart_type> [region]")
+        print("       python -m src.worker fetch_details")
         print("Example: python -m src.worker app_store top_free US")

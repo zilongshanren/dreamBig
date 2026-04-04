@@ -79,7 +79,15 @@ export default async function GameDetailPage({
     <div>
       {/* Header */}
       <div className="flex items-start justify-between mb-6">
-        <div>
+        <div className="flex items-start gap-4">
+          {game.thumbnailUrl && (
+            <img
+              src={game.thumbnailUrl}
+              alt={game.nameZh || game.nameEn || ""}
+              className="w-16 h-16 rounded-xl shadow object-cover shrink-0"
+            />
+          )}
+          <div>
           <Link
             href="/games"
             className="text-sm text-gray-400 hover:text-gray-600 mb-2 inline-block"
@@ -97,6 +105,7 @@ export default async function GameDetailPage({
               开发者: {game.developer}
             </p>
           )}
+          </div>
         </div>
         {score && (
           <div className="text-center">
@@ -143,6 +152,28 @@ export default async function GameDetailPage({
           IAA 适配: {game.iaaSuitability}
         </span>
       </div>
+
+      {/* Screenshots */}
+      {(() => {
+        const meta = game.metadata as any;
+        const screenshots = meta?.screenshots as string[] | undefined;
+        if (!screenshots?.length) return null;
+        return (
+          <div className="mb-6">
+            <h3 className="font-semibold mb-3">游戏截图</h3>
+            <div className="flex gap-3 overflow-x-auto pb-2">
+              {screenshots.map((url, i) => (
+                <img
+                  key={i}
+                  src={url}
+                  alt={`Screenshot ${i + 1}`}
+                  className="h-48 rounded-lg shadow object-cover shrink-0"
+                />
+              ))}
+            </div>
+          </div>
+        );
+      })()}
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
         {/* Score Radar */}

@@ -205,6 +205,16 @@ class DeduplicationEngine:
                 platform_id=entry.platform_id,
             )
 
+            # Store icon as thumbnail if the game doesn't have one yet
+            if getattr(entry, "icon_url", None):
+                conn.execute(
+                    """
+                    UPDATE games SET thumbnail_url = %s
+                    WHERE id = %s AND thumbnail_url IS NULL
+                    """,
+                    (entry.icon_url, game_id),
+                )
+
             # Link platform listing
             listing_id = self.link_platform_listing(
                 conn,
