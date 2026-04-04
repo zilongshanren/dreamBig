@@ -1,6 +1,8 @@
 import { prisma } from "@/lib/prisma";
 import { PLATFORM_LABELS } from "@/lib/utils";
 
+export const dynamic = "force-dynamic";
+
 async function getScraperJobs() {
   try {
     return await prisma.scrapeJob.findMany({

@@ -2,6 +2,8 @@ import Link from "next/link";
 import { prisma } from "@/lib/prisma";
 import { PLATFORM_LABELS } from "@/lib/utils";
 
+export const dynamic = "force-dynamic";
+
 interface SearchParams {
   genre?: string;
   platform?: string;

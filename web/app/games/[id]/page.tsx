@@ -3,6 +3,8 @@ import { notFound } from "next/navigation";
 import { prisma } from "@/lib/prisma";
 import { PLATFORM_LABELS, PLATFORM_COLORS, formatNumber } from "@/lib/utils";
 import { ScoreRadar } from "@/components/charts/score-radar";
+
+export const dynamic = "force-dynamic";
 import { RankingChart } from "@/components/charts/ranking-chart";
 
 async function getGame(id: number) {
