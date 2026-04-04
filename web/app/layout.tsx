@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 import Link from "next/link";
 import "./globals.css";
+import { MobileNav } from "@/components/mobile-nav";
 
 export const metadata: Metadata = {
   title: "DreamBig - 游戏榜单监控",
@@ -25,8 +26,8 @@ export default function RootLayout({
     <html lang="zh-CN" className="h-full">
       <body className="h-full bg-gray-50 text-gray-900 antialiased" style={{ fontFamily: '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif' }}>
         <div className="flex h-full">
-          {/* Sidebar */}
-          <aside className="w-56 bg-gray-900 text-white flex flex-col shrink-0">
+          {/* Desktop Sidebar */}
+          <aside className="hidden md:flex w-56 bg-gray-900 text-white flex-col shrink-0">
             <div className="p-4 border-b border-gray-700">
               <h1 className="text-xl font-bold tracking-tight">DreamBig</h1>
               <p className="text-xs text-gray-400 mt-1">IAA 爆品发现平台</p>
@@ -48,9 +49,12 @@ export default function RootLayout({
             </div>
           </aside>
 
+          {/* Mobile Header + Nav */}
+          <MobileNav items={NAV_ITEMS} />
+
           {/* Main content */}
-          <main className="flex-1 overflow-auto">
-            <div className="p-6 max-w-7xl mx-auto">{children}</div>
+          <main className="flex-1 overflow-auto pt-14 md:pt-0">
+            <div className="p-4 md:p-6 max-w-7xl mx-auto">{children}</div>
           </main>
         </div>
       </body>

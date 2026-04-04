@@ -49,9 +49,9 @@ export default async function AlertsPage() {
         </Link>
       </div>
 
-      <div className="grid grid-cols-3 gap-6">
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
         {/* Alert Rules */}
-        <div className="col-span-1">
+        <div className="lg:col-span-1">
           <h3 className="font-semibold text-lg mb-4">告警规则</h3>
           {alerts.length === 0 ? (
             <div className="bg-white rounded-lg shadow p-4">
@@ -110,10 +110,10 @@ export default async function AlertsPage() {
         </div>
 
         {/* Alert Events Timeline */}
-        <div className="col-span-2">
+        <div className="lg:col-span-2">
           <h3 className="font-semibold text-lg mb-4">告警历史</h3>
-          <div className="bg-white rounded-lg shadow overflow-hidden">
-            <table className="w-full text-sm">
+          <div className="bg-white rounded-lg shadow overflow-hidden overflow-x-auto">
+            <table className="w-full text-sm min-w-[500px]">
               <thead className="bg-gray-50 border-b">
                 <tr>
                   <th className="text-left px-4 py-2 font-medium text-gray-500">

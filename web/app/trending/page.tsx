@@ -76,9 +76,9 @@ export default async function TrendingPage() {
     <div>
       <h2 className="text-2xl font-bold mb-6">趋势分析</h2>
 
-      <div className="grid grid-cols-2 gap-6">
+      <div className="space-y-6">
         {/* Velocity Leaderboard */}
-        <div className="bg-white rounded-lg shadow p-4 col-span-2">
+        <div className="bg-white rounded-lg shadow p-4">
           <h3 className="font-semibold text-lg mb-4">
             上升速度排行榜 (Ranking Velocity)
           </h3>
@@ -87,7 +87,8 @@ export default async function TrendingPage() {
               暂无数据
             </p>
           ) : (
-            <table className="w-full text-sm">
+            <div className="overflow-x-auto">
+            <table className="w-full text-sm min-w-[600px]">
               <thead className="bg-gray-50 border-b">
                 <tr>
                   <th className="text-center px-3 py-2 font-medium text-gray-500 w-12">
@@ -172,18 +173,19 @@ export default async function TrendingPage() {
                 ))}
               </tbody>
             </table>
+            </div>
           )}
         </div>
 
         {/* New Chart Entries */}
-        <div className="bg-white rounded-lg shadow p-4 col-span-2">
+        <div className="bg-white rounded-lg shadow p-4">
           <h3 className="font-semibold text-lg mb-4">新入榜游戏</h3>
           {newEntries.length === 0 ? (
             <p className="text-gray-400 text-sm py-4 text-center">
               暂无新入榜游戏
             </p>
           ) : (
-            <div className="grid grid-cols-4 gap-3">
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
               {newEntries.map((n) => (
                 <Link
                   key={n.id}

@@ -61,7 +61,7 @@ export default async function AdminPage() {
       <h2 className="text-2xl font-bold mb-6">管理后台</h2>
 
       {/* Data Stats */}
-      <div className="grid grid-cols-6 gap-4 mb-8">
+      <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-4 mb-8">
         <StatCard label="游戏" value={stats.games} />
         <StatCard label="平台记录" value={stats.listings} />
         <StatCard label="排名快照" value={stats.snapshots} />
@@ -70,7 +70,7 @@ export default async function AdminPage() {
         <StatCard label="潜力评分" value={stats.scores} />
       </div>
 
-      <div className="grid grid-cols-3 gap-6">
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
         {/* Platform Coverage */}
         <div className="bg-white rounded-lg shadow p-4">
           <h3 className="font-semibold mb-4">平台覆盖</h3>
@@ -96,7 +96,7 @@ export default async function AdminPage() {
         </div>
 
         {/* Scraper Job History */}
-        <div className="col-span-2 bg-white rounded-lg shadow overflow-hidden">
+        <div className="lg:col-span-2 bg-white rounded-lg shadow overflow-hidden overflow-x-auto">
           <div className="px-4 py-3 border-b bg-gray-50 flex justify-between items-center">
             <h3 className="font-semibold">爬虫任务历史</h3>
             <form action="/api/admin/trigger" method="POST">
@@ -108,7 +108,7 @@ export default async function AdminPage() {
               </button>
             </form>
           </div>
-          <table className="w-full text-sm">
+          <table className="w-full text-sm min-w-[500px]">
             <thead className="bg-gray-50 border-b">
               <tr>
                 <th className="text-left px-3 py-2 font-medium text-gray-500">

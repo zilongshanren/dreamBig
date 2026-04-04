@@ -117,7 +117,7 @@ export default async function GamesPage({
               type="text"
               defaultValue={params.search}
               placeholder="游戏名称..."
-              className="border rounded px-3 py-1.5 text-sm w-48"
+              className="border rounded px-3 py-1.5 text-sm w-full sm:w-48"
             />
           </div>
           <div>
@@ -177,8 +177,8 @@ export default async function GamesPage({
       </div>
 
       {/* Game Table */}
-      <div className="bg-white rounded-lg shadow overflow-hidden">
-        <table className="w-full text-sm">
+      <div className="bg-white rounded-lg shadow overflow-hidden overflow-x-auto">
+        <table className="w-full text-sm min-w-[600px]">
           <thead className="bg-gray-50 border-b">
             <tr>
               <th className="text-left px-4 py-3 font-medium text-gray-500">

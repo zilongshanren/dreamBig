@@ -144,7 +144,7 @@ export default async function GameDetailPage({
         </span>
       </div>
 
-      <div className="grid grid-cols-2 gap-6">
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
         {/* Score Radar */}
         {score && (
           <div className="bg-white rounded-lg shadow p-4">

@@ -81,7 +81,7 @@ export default async function DashboardPage() {
       <h2 className="text-2xl font-bold mb-6">Dashboard</h2>
 
       {/* Stat Cards */}
-      <div className="grid grid-cols-4 gap-4 mb-8">
+      <div className="grid grid-cols-2 lg:grid-cols-4 gap-4 mb-8">
         <StatCard label="总游戏数" value={stats.gameCount} />
         <StatCard label="平台记录" value={stats.platformCount} />
         <StatCard label="今日告警" value={stats.alertCount} />
@@ -93,7 +93,7 @@ export default async function DashboardPage() {
         />
       </div>
 
-      <div className="grid grid-cols-2 gap-6">
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
         {/* Rising Stars */}
         <div className="bg-white rounded-lg shadow p-4">
           <h3 className="font-semibold text-lg mb-4">Rising Stars (上升最快)</h3>

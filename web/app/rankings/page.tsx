@@ -101,7 +101,7 @@ export default async function RankingsPage({
 
       {/* Filters */}
       <div className="bg-white rounded-lg shadow p-4 mb-6">
-        <form className="flex gap-4 items-end">
+        <form className="flex flex-wrap gap-4 items-end">
           <div>
             <label className="block text-xs text-gray-500 mb-1">平台</label>
             <select
@@ -158,9 +158,9 @@ export default async function RankingsPage({
         </form>
       </div>
 
-      <div className="grid grid-cols-3 gap-6">
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
         {/* Rankings Table */}
-        <div className="col-span-2 bg-white rounded-lg shadow overflow-hidden">
+        <div className="lg:col-span-2 bg-white rounded-lg shadow overflow-hidden">
           <div className="px-4 py-3 border-b bg-gray-50 flex justify-between items-center">
             <h3 className="font-semibold">
               排行{date ? ` (${date})` : ""}
@@ -169,6 +169,7 @@ export default async function RankingsPage({
               {rankings.length} 条记录
             </span>
           </div>
+          <div className="overflow-x-auto">
           <table className="w-full text-sm">
             <thead className="bg-gray-50 border-b">
               <tr>
@@ -266,6 +267,7 @@ export default async function RankingsPage({
               )}
             </tbody>
           </table>
+          </div>
         </div>
 
         {/* Biggest Movers */}
