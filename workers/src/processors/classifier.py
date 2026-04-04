@@ -87,9 +87,9 @@ def classify_genre(genre_str: str | None, tags: list[str] | None = None) -> str 
         if normalized in GENRE_MAPPING:
             return GENRE_MAPPING[normalized]
 
-        # Partial match
+        # Word-boundary match (avoid false positives like "board" in "cardboard")
         for key, value in GENRE_MAPPING.items():
-            if key in normalized or normalized in key:
+            if re.search(r'(?:^|[\s\-_])' + re.escape(key) + r'(?:$|[\s\-_])', normalized):
                 return value
 
     return None

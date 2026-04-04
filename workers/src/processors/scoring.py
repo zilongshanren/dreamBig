@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 from dataclasses import dataclass
 from datetime import date, timedelta
 from pathlib import Path
@@ -164,18 +165,24 @@ class ScoringEngine:
         genre = (row[0] or "").lower().strip()
         tags = row[1] or []
 
-        # Check genre directly
+        # Check genre directly (exact match first, then word-boundary)
         best_score = 50  # default for unknown
-        for key, info in self.genres.items():
-            if key in genre or genre in key:
-                best_score = max(best_score, info["iaa_score"])
+        if genre in self.genres:
+            best_score = max(best_score, self.genres[genre]["iaa_score"])
+        else:
+            for key, info in self.genres.items():
+                if re.search(r'(?:^|[\s\-_])' + re.escape(key) + r'(?:$|[\s\-_])', genre):
+                    best_score = max(best_score, info["iaa_score"])
 
-        # Also check gameplay tags
+        # Also check gameplay tags (exact match first, then word-boundary)
         for tag in tags:
             tag_lower = tag.lower().strip()
-            for key, info in self.genres.items():
-                if key in tag_lower or tag_lower in key:
-                    best_score = max(best_score, info["iaa_score"])
+            if tag_lower in self.genres:
+                best_score = max(best_score, self.genres[tag_lower]["iaa_score"])
+            else:
+                for key, info in self.genres.items():
+                    if re.search(r'(?:^|[\s\-_])' + re.escape(key) + r'(?:$|[\s\-_])', tag_lower):
+                        best_score = max(best_score, info["iaa_score"])
 
         return best_score
 
