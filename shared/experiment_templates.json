@@ -1,0 +1,88 @@
+{
+  "templates": [
+    {
+      "id": "rewarded_revive",
+      "label_zh": "复活激励视频",
+      "hypothesis": "允许玩家在失败后观看激励视频复活，提高留存和单日会话长度",
+      "variant_a": { "placement": "none", "description": "无广告复活" },
+      "variant_b": { "placement": "session_fail_screen", "ad_type": "rewarded_video", "reward": "instant_revive" },
+      "success_metric": "day1_retention",
+      "expected_lift_pct": 5.0,
+      "sample_size": 2000,
+      "priority": 1,
+      "applicable_genres": ["casual_action", "runner", "arcade", "puzzle", "tower_defense"]
+    },
+    {
+      "id": "double_reward",
+      "label_zh": "奖励翻倍视频",
+      "hypothesis": "通关后提供观看广告翻倍奖励，提高 ARPDAU 且不伤留存",
+      "variant_a": { "placement": "level_complete", "reward": "base" },
+      "variant_b": { "placement": "level_complete", "ad_type": "rewarded_video", "reward": "2x" },
+      "success_metric": "arpdau",
+      "expected_lift_pct": 8.0,
+      "sample_size": 1500,
+      "priority": 2,
+      "applicable_genres": ["*"]
+    },
+    {
+      "id": "session_end_interstitial",
+      "label_zh": "退出插屏广告",
+      "hypothesis": "用户返回主页时插屏，对留存影响最小",
+      "variant_a": { "placement": "none" },
+      "variant_b": { "placement": "session_return_to_menu", "ad_type": "interstitial", "frequency_cap": "1_per_session" },
+      "success_metric": "ad_arpdau",
+      "expected_lift_pct": 12.0,
+      "sample_size": 2000,
+      "priority": 3,
+      "applicable_genres": ["*"]
+    },
+    {
+      "id": "offline_income_boost",
+      "label_zh": "离线收益翻倍视频",
+      "hypothesis": "登录后观看广告翻倍离线收益，提升放置类游戏 day3 留存",
+      "variant_a": { "placement": "none", "reward": "base" },
+      "variant_b": { "placement": "login_offline_reward", "ad_type": "rewarded_video", "reward": "2x_offline" },
+      "success_metric": "day3_retention",
+      "expected_lift_pct": 6.5,
+      "sample_size": 1500,
+      "priority": 1,
+      "applicable_genres": ["idle", "simulation", "tycoon"]
+    },
+    {
+      "id": "energy_refill",
+      "label_zh": "体力刷新激励",
+      "hypothesis": "体力耗尽时提供广告换体力，增加会话数",
+      "variant_a": { "placement": "none", "energy": "timer_only" },
+      "variant_b": { "placement": "energy_depleted", "ad_type": "rewarded_video", "reward": "full_energy" },
+      "success_metric": "sessions_per_dau",
+      "expected_lift_pct": 9.0,
+      "sample_size": 1500,
+      "priority": 2,
+      "applicable_genres": ["match3", "puzzle", "casual_action"]
+    },
+    {
+      "id": "remove_ads_iap",
+      "label_zh": "去广告付费包",
+      "hypothesis": "提供 $2.99 去广告包，吸引付费用户",
+      "variant_a": { "iap": "no_remove_ads" },
+      "variant_b": { "iap": "remove_ads_299", "trigger": "after_3rd_interstitial" },
+      "success_metric": "iap_arpdau",
+      "expected_lift_pct": 3.0,
+      "sample_size": 3000,
+      "priority": 4,
+      "applicable_genres": ["*"]
+    },
+    {
+      "id": "rare_character_trial",
+      "label_zh": "稀有角色试玩激励",
+      "hypothesis": "观看广告解锁稀有角色 1 局试玩，提高 day7 留存和后续付费转化",
+      "variant_a": { "placement": "none" },
+      "variant_b": { "placement": "character_pick_screen", "ad_type": "rewarded_video", "reward": "1_battle_rare_char" },
+      "success_metric": "day7_retention",
+      "expected_lift_pct": 7.0,
+      "sample_size": 2000,
+      "priority": 2,
+      "applicable_genres": ["card", "rpg", "strategy"]
+    }
+  ]
+}

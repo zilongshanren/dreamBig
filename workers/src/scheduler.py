@@ -128,6 +128,26 @@ def enqueue_scrape_social_depth():
     logger.info("Enqueued social depth scrape")
 
 
+def enqueue_genre_weekly_report():
+    queue.enqueue("src.worker.run_genre_weekly_report", job_timeout="20m")
+    logger.info("Enqueued genre weekly report")
+
+
+def enqueue_project_advice():
+    queue.enqueue("src.worker.run_project_advice_generation", job_timeout="60m")
+    logger.info("Enqueued project advice generation")
+
+
+def enqueue_asset_analysis():
+    queue.enqueue("src.worker.run_asset_analysis", job_timeout="30m")
+    logger.info("Enqueued asset analysis")
+
+
+def enqueue_feishu_worker():
+    queue.enqueue("src.worker.run_feishu_command_processor", job_timeout="5m")
+    logger.info("Enqueued feishu command processor")
+
+
 def main():
     scheduler = BlockingScheduler()
 
@@ -264,6 +284,18 @@ def main():
 
     # === Weekly: embedding refresh (Sunday 3 AM, low-traffic window) ===
     scheduler.add_job(enqueue_embedding_refresh, "cron", day_of_week="sun", hour=3, minute=0, id="embedding_refresh")
+
+    # === Monday 09:00: Genre weekly report (uses last week's data) ===
+    scheduler.add_job(enqueue_genre_weekly_report, "cron", day_of_week="mon", hour=9, minute=0, id="genre_weekly_report")
+
+    # === 12:30: Project advice generation (after daily digest) ===
+    scheduler.add_job(enqueue_project_advice, "cron", hour=12, minute=30, id="project_advice")
+
+    # === Tuesday 02:00: Asset analysis (weekly, low-traffic window, cheap but slow) ===
+    scheduler.add_job(enqueue_asset_analysis, "cron", day_of_week="tue", hour=2, minute=0, id="asset_analysis")
+
+    # === Every 1 minute: Feishu command processor (bot needs quick response) ===
+    scheduler.add_job(enqueue_feishu_worker, "interval", minutes=1, id="feishu_worker")
 
     logger.info("Scheduler started. Jobs registered:")
     for job in scheduler.get_jobs():

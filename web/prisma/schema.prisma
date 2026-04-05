@@ -40,6 +40,8 @@ model Game {
   gameReport          GameReport?
   gameEmbedding       GameEmbedding?
   socialContentSamples SocialContentSample[]
+  experiments         Experiment[]
+  assetAnalyses       GameAssetAnalysis[]
 
   @@map("games")
 }
@@ -465,4 +467,98 @@ model SocialContentSample {
   @@index([gameId, postedAt(sort: Desc)])
   @@index([platform, viewCount(sort: Desc)])
   @@map("social_content_samples")
+}
+
+// ============================================================
+// Phase 3-3: Experiments (A/B test tracker)
+// ============================================================
+model Experiment {
+  id            Int      @id @default(autoincrement())
+  gameId        Int      @map("game_id")
+  name          String
+  hypothesis    String   @db.Text
+  variantA      Json     @map("variant_a")
+  variantB      Json     @map("variant_b")
+  successMetric String   @map("success_metric")
+  sampleSize    Int?     @map("sample_size")
+  status        String   @default("draft")
+  priority      Int      @default(3) @db.SmallInt
+  expectedLift  Decimal? @map("expected_lift") @db.Decimal(5, 2)
+  actualLift    Decimal? @map("actual_lift") @db.Decimal(5, 2)
+  notes         String?  @db.Text
+  startedAt     DateTime? @map("started_at")
+  completedAt   DateTime? @map("completed_at")
+  createdAt     DateTime @default(now()) @map("created_at")
+  updatedAt     DateTime @default(now()) @updatedAt @map("updated_at")
+
+  game Game @relation(fields: [gameId], references: [id], onDelete: Cascade)
+
+  @@index([gameId, createdAt(sort: Desc)])
+  @@index([status])
+  @@map("experiments")
+}
+
+// ============================================================
+// Phase 4-1: Game asset analysis (visual analysis results)
+// ============================================================
+model GameAssetAnalysis {
+  id           Int      @id @default(autoincrement())
+  gameId       Int      @map("game_id")
+  assetType    String   @map("asset_type")
+  assetUrl     String   @map("asset_url") @db.Text
+  analysisType String   @map("analysis_type")
+  result       Json
+  modelUsed    String   @map("model_used")
+  confidence   Decimal? @db.Decimal(3, 2)
+  tokensUsed   Int?     @map("tokens_used")
+  costUsd      Decimal? @map("cost_usd") @db.Decimal(10, 4)
+  analyzedAt   DateTime @default(now()) @map("analyzed_at")
+
+  game Game @relation(fields: [gameId], references: [id], onDelete: Cascade)
+
+  @@index([gameId, assetType])
+  @@index([analysisType, analyzedAt(sort: Desc)])
+  @@map("game_asset_analysis")
+}
+
+// ============================================================
+// Phase 4-3: Feishu bot command log (bot interaction log)
+// ============================================================
+model FeishuBotCommand {
+  id         Int       @id @default(autoincrement())
+  messageId  String    @unique @map("message_id")
+  userOpenId String?   @map("user_open_id")
+  chatId     String?   @map("chat_id")
+  command    String
+  args       String?
+  status     String    @default("pending")
+  response   String?   @db.Text
+  errorMsg   String?   @map("error_msg")
+  responseAt DateTime? @map("response_at")
+  createdAt  DateTime  @default(now()) @map("created_at")
+
+  @@index([status, createdAt])
+  @@index([userOpenId, createdAt(sort: Desc)])
+  @@map("feishu_bot_commands")
+}
+
+// ============================================================
+// Phase 3-1 weekly / 3-2 batch advice storage (generated reports)
+// ============================================================
+model GeneratedReport {
+  id            Int      @id @default(autoincrement())
+  reportType    String   @map("report_type")
+  scope         String
+  title         String
+  summary       String?  @db.Text
+  payload       Json
+  evidenceCount Int      @default(0) @map("evidence_count")
+  modelUsed     String?  @map("model_used")
+  tokensUsed    Int?     @map("tokens_used")
+  costUsd       Decimal? @map("cost_usd") @db.Decimal(10, 4)
+  generatedAt   DateTime @default(now()) @map("generated_at")
+
+  @@unique([reportType, scope])
+  @@index([reportType, generatedAt(sort: Desc)])
+  @@map("generated_reports")
 }

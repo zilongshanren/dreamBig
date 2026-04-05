@@ -528,6 +528,30 @@ def run_daily_digest():
     return _run(DB_URL)
 
 
+def run_genre_weekly_report():
+    """Generate this week's genre trend report."""
+    from src.processors.genre_weekly_report import run_genre_weekly_report as _run
+    return _run(DB_URL)
+
+
+def run_project_advice_generation(limit: int = 20):
+    """Generate pursue/monitor/pass advice for top-N games with GameReports."""
+    from src.processors.project_advice_generator import run_project_advice_generation as _run
+    return _run(DB_URL, limit=limit)
+
+
+def run_asset_analysis(limit: int = 10, screenshots_per_game: int = 2):
+    """Run GPT-4o-mini vision analysis on game screenshots."""
+    from src.processors.asset_analysis import run_asset_analysis as _run
+    return _run(DB_URL, limit=limit, screenshots_per_game=screenshots_per_game)
+
+
+def run_feishu_command_processor():
+    """Process pending Feishu bot commands."""
+    from src.processors.feishu_command_worker import run_feishu_command_processor as _run
+    return _run(DB_URL)
+
+
 def run_scrape_social_depth(limit_per_game: int = 20):
     """Scrape deep social content (video titles + hashtags + metrics) for high-potential games."""
     from src.scrapers.social_depth import SocialDepthScraper
@@ -629,6 +653,29 @@ def poll_internal_jobs() -> None:
                         (job_id,),
                     )
                     logger.info(f"Internal job {job_id}: report_generation for game {game_id} done")
+                elif job_type == "experiment_suggest":
+                    game_id = int(payload.get("gameId"))
+                    from src.processors.experiment_advisor import run_experiment_suggest
+                    suggestions = run_experiment_suggest(DB_URL, game_id)
+                    if suggestions is not None:
+                        # Store suggestions back into scrape_jobs.error_message as JSON
+                        conn.execute(
+                            "UPDATE scrape_jobs SET status='success', items_scraped=%s, error_message=%s, finished_at=NOW() WHERE id=%s",
+                            (len(suggestions), _json.dumps({"suggestions": suggestions}), job_id),
+                        )
+                    else:
+                        conn.execute(
+                            "UPDATE scrape_jobs SET status='failed', error_message='suggest_failed', finished_at=NOW() WHERE id=%s",
+                            (job_id,),
+                        )
+                elif job_type == "feishu_command":
+                    # Feishu commands are processed in batch, not per-job. Just run the processor.
+                    from src.processors.feishu_command_worker import run_feishu_command_processor
+                    count = run_feishu_command_processor(DB_URL)
+                    conn.execute(
+                        "UPDATE scrape_jobs SET status='success', items_scraped=%s, finished_at=NOW() WHERE id=%s",
+                        (count, job_id),
+                    )
                 else:
                     conn.execute(
                         "UPDATE scrape_jobs SET status='failed', error_message='unknown job_type', finished_at=NOW() WHERE id=%s",
@@ -676,6 +723,16 @@ if __name__ == "__main__":
         print(run_daily_digest())
     elif len(sys.argv) >= 2 and sys.argv[1] == "scrape_social_depth":
         print(run_scrape_social_depth())
+    elif len(sys.argv) >= 2 and sys.argv[1] == "genre_weekly":
+        print(run_genre_weekly_report())
+    elif len(sys.argv) >= 2 and sys.argv[1] == "project_advice":
+        limit = int(sys.argv[2]) if len(sys.argv) > 2 else 20
+        print(run_project_advice_generation(limit=limit))
+    elif len(sys.argv) >= 2 and sys.argv[1] == "asset_analysis":
+        limit = int(sys.argv[2]) if len(sys.argv) > 2 else 10
+        print(run_asset_analysis(limit=limit))
+    elif len(sys.argv) >= 2 and sys.argv[1] == "feishu_worker":
+        print(run_feishu_command_processor())
     elif len(sys.argv) >= 3:
         platform = sys.argv[1]
         chart_type = sys.argv[2]
@@ -695,4 +752,8 @@ if __name__ == "__main__":
         print("       python -m src.worker extract_hooks")
         print("       python -m src.worker daily_digest")
         print("       python -m src.worker scrape_social_depth")
+        print("       python -m src.worker genre_weekly")
+        print("       python -m src.worker project_advice [limit]")
+        print("       python -m src.worker asset_analysis [limit]")
+        print("       python -m src.worker feishu_worker")
         print("Example: python -m src.worker app_store top_free US")

@@ -5,6 +5,7 @@ import { PLATFORM_LABELS, PLATFORM_COLORS, formatNumber } from "@/lib/utils";
 import { ScoreRadar } from "@/components/charts/score-radar";
 import { SimilarGamesCard } from "@/components/similar-games-card";
 import { SocialContentCard } from "@/components/social-content-card";
+import { VisualAnalysisCard } from "@/components/visual-analysis-card";
 
 export const dynamic = "force-dynamic";
 import { RankingChart } from "@/components/charts/ranking-chart";
@@ -773,6 +774,9 @@ export default async function GameDetailPage({
 
         {/* Social Content samples (depth) */}
         <SocialContentCard gameId={game.id} />
+
+        {/* Visual Analysis (GPT-4o-mini vision) */}
+        <VisualAnalysisCard gameId={game.id} />
 
         {/* Ad Intelligence */}
         <div className="bg-white rounded-lg shadow p-4 col-span-2">
