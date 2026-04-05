@@ -14,13 +14,46 @@
 | Phase | 范围 | 状态 |
 |---|---|---|
 | **Phase 1** | 核心闭环（数据 + 评分 + 告警 + LLM 战报 + IAA 顾问） | ✅ 已完成 `7f7a7c3` |
-| **Phase 2** | 扩展能力（订阅中心 + 赛道分析 + 社媒深化 + 认证） | 📋 规划中 |
-| **Phase 3** | 决策智能（自动立项建议 + 商业化实验引擎 + 多团队） | 📋 规划中 |
-| **Phase 4** | 运营工具（OCR + 截图素材分析 + Trailer 拆解） | 🔬 研究中 |
+| **Phase 2** | 扩展能力（订阅中心 + 赛道分析 + 社媒深化 + 认证） | ✅ 已完成 `b8ca9b0` |
+| **Phase 3** | 决策智能（自动立项建议 + 商业化实验引擎 + 多团队） | 🟡 部分完成 `eb6c3cb` (P3-4 未做) |
+| **Phase 4** | 运营工具（OCR + 截图素材分析 + Trailer 拆解） | 🟡 部分完成 `eb6c3cb` (P4-2 未做) |
 
 ---
 
-## Phase 2 — 扩展能力
+## 已完成项（commit 记录）
+
+### Phase 2 `b8ca9b0`
+- **P2-1 订阅中心** — Subscription CRUD + 日报生成器 + WeCom/Email 通道
+- **P2-2 赛道分析** — Genre 聚合 + OpenAI embedding + pgvector 相似查询 + /genres 页
+- **P2-3 社媒深度** — Douyin/TikTok/YouTube/Bilibili 视频抓取 + Haiku hook 抽取
+- **P2-4 认证 + RBAC** — NextAuth v5 + 5 角色 + /login /signup /account
+- **P2-5 评论扩展** — TapTap 修复 + 4399 scraper + 多地区 App Store + 语言检测
+
+### Phase 3/4 `eb6c3cb`
+- **P3-1 赛道周报** — Sonnet 生成的周度趋势报告 + /reports 页
+- **P3-2 立项建议** — pursue/monitor/pass Opus 建议 + /projects 页
+- **P3-3 实验引擎** — 7 个 A/B 模板 + /experiments CRUD + LLM 建议
+- **P4-1 视觉分析** — GPT-4o-mini 对截图做 4 类分析（场景/配色/UI/OCR）
+- **P4-3 飞书机器人** — webhook + 5 个命令（/analyze /iaa /similar /trending /help）
+
+---
+
+## 剩余未做项
+
+### P3-4 多团队 workspace（跳过理由）
+需要给 10+ 现有表加 `workspace_id` FK，全站查询需要重构加过滤，是一次真正的架构级重构，**无法通过并行 agent 完成**。建议后续单独立专项，有专人负责全局一致性。
+
+### P4-2 Trailer 自动拆解（跳过理由）
+依赖重型基础设施：
+- ffmpeg + yt-dlp 下载视频
+- Whisper large 模型转写（~3GB 模型）
+- 帧抽取 + 视觉分析
+
+建议在有 GPU 资源后单独立项。短期可以考虑接 TikHub 或第三方视频分析 SaaS。
+
+---
+
+## Phase 2 — 扩展能力（已完成，供参考）
 
 ### P2-1 订阅中心与日报 `PRD §9.6`
 
