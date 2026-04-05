@@ -6,6 +6,14 @@ Endpoint:
 The RSS feed is paginated (1-10) with ~50 reviews per page, giving a
 practical ceiling of ~500 recent reviews per app. The first entry in
 each feed is the app itself (metadata), not a review — we skip it.
+
+Multi-region support: the `region` arg maps directly onto the URL
+storefront path. Any 2-letter ISO country code the App Store
+supports (us, gb, au, cn, hk, tw, jp, kr, de, fr, es, it, ...)
+works. Users in a given storefront may still review in different
+languages (e.g. English tourists reviewing Japanese apps on the jp
+storefront), so we detect language per-review from content rather
+than relying on the region.
 """
 
 from __future__ import annotations
@@ -13,6 +21,7 @@ from __future__ import annotations
 import logging
 from datetime import datetime
 
+from ...utils.lang_detect import detect_language, normalize_lang_code
 from .base import BaseReviewScraper, ReviewEntry
 
 logger = logging.getLogger(__name__)
@@ -25,16 +34,14 @@ RSS_URL = (
 MAX_PAGES = 10  # iTunes RSS caps at page 10
 PAGE_SIZE_HINT = 50  # approximate
 
-REGION_MAP = {
-    "CN": "cn",
-    "US": "us",
-    "JP": "jp",
-    "KR": "kr",
-    "TW": "tw",
-    "GB": "gb",
-    "DE": "de",
-    "BR": "br",
-    "IN": "in",
+# Expected default review language per storefront. Used only as a
+# hint — actual language is detected from content since reviewers
+# in a given storefront may write in multiple languages.
+REGION_LANG_DEFAULTS = {
+    "us": "en", "gb": "en", "au": "en", "ca": "en",
+    "cn": "zh", "hk": "zh-tw", "tw": "zh-tw",
+    "jp": "ja", "kr": "ko",
+    "de": "de", "fr": "fr", "es": "es", "it": "it",
 }
 
 
@@ -68,19 +75,21 @@ class AppStoreReviewScraper(BaseReviewScraper):
     async def scrape_reviews(
         self,
         platform_id: str,
-        region: str = "US",
+        region: str = "us",
         limit: int = 200,
-        lang: str = "en",
+        lang: str | None = None,
     ) -> list[ReviewEntry]:
         """Scrape most-recent App Store reviews via the iTunes RSS feed.
 
-        `lang` is accepted for API consistency but ignored — iTunes
-        RSS returns reviews for whichever language a user wrote in
-        the given region's store. `region` maps to storefronts
-        (us, cn, jp, ...).
+        `region` is a 2-letter storefront code (us, cn, jp, kr, hk,
+        tw, gb, de, fr, ...); it maps directly into the RSS URL.
+        `lang` is an optional fallback hint — actual language is
+        always detected per-review from the content so that
+        multi-language stores (hk, ca, ...) are handled correctly.
         """
         client = await self.get_client()
-        region_code = REGION_MAP.get(region.upper(), region.lower()) or "us"
+        region_code = (region or "us").strip().lower() or "us"
+        lang_default = lang or REGION_LANG_DEFAULTS.get(region_code, "en")
 
         entries: list[ReviewEntry] = []
         max_pages = min(MAX_PAGES, max(1, (limit + PAGE_SIZE_HINT - 1) // PAGE_SIZE_HINT))
@@ -162,6 +171,14 @@ class AppStoreReviewScraper(BaseReviewScraper):
                     title = _label(e.get("title"))
                     version = _label(e.get("im:version"))
 
+                    # Always detect language from content — a jp
+                    # storefront review may still be in English if
+                    # written by a tourist, etc.
+                    detected_lang = (
+                        detect_language(content)
+                        or normalize_lang_code(lang_default)
+                    )
+
                     entries.append(
                         ReviewEntry(
                             external_id=review_id,
@@ -169,7 +186,7 @@ class AppStoreReviewScraper(BaseReviewScraper):
                             content=content,
                             author_name=author_name,
                             helpful_count=helpful_count,
-                            language=lang,
+                            language=detected_lang,
                             posted_at=posted_at,
                             metadata={
                                 "title": title,

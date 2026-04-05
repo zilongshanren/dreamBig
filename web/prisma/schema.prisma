@@ -39,6 +39,7 @@ model Game {
   reviewTopicSummaries ReviewTopicSummary[]
   gameReport          GameReport?
   gameEmbedding       GameEmbedding?
+  socialContentSamples SocialContentSample[]
 
   @@map("games")
 }
@@ -304,4 +305,164 @@ model GameEmbedding {
   game Game @relation(fields: [gameId], references: [id])
 
   @@map("game_embeddings")
+}
+
+// ============================================================
+// Phase 2: Auth (NextAuth.js v5 compatible)
+// ============================================================
+model User {
+  id            String    @id @default(cuid())
+  email         String    @unique
+  emailVerified DateTime? @map("email_verified")
+  name          String?
+  image         String?
+  passwordHash  String?   @map("password_hash")  // for credentials provider
+  role          String    @default("viewer")      // super_admin/analyst/publisher/monetization/viewer
+  isActive      Boolean   @default(true) @map("is_active")
+  createdAt     DateTime  @default(now()) @map("created_at")
+  updatedAt     DateTime  @default(now()) @updatedAt @map("updated_at")
+  lastLoginAt   DateTime? @map("last_login_at")
+
+  accounts      Account[]
+  sessions      Session[]
+  subscriptions Subscription[]
+  auditLogs     AuditLog[]
+
+  @@map("users")
+}
+
+// ============================================================
+// Phase 2: Account (OAuth providers, NextAuth standard)
+// ============================================================
+model Account {
+  id                String  @id @default(cuid())
+  userId            String  @map("user_id")
+  type              String
+  provider          String
+  providerAccountId String  @map("provider_account_id")
+  refresh_token     String? @db.Text
+  access_token      String? @db.Text
+  expires_at        Int?
+  token_type        String?
+  scope             String?
+  id_token          String? @db.Text
+  session_state     String?
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([provider, providerAccountId])
+  @@map("accounts")
+}
+
+// ============================================================
+// Phase 2: Session (NextAuth standard)
+// ============================================================
+model Session {
+  id           String   @id @default(cuid())
+  sessionToken String   @unique @map("session_token")
+  userId       String   @map("user_id")
+  expires      DateTime
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("sessions")
+}
+
+// ============================================================
+// Phase 2: VerificationToken (NextAuth standard)
+// ============================================================
+model VerificationToken {
+  identifier String
+  token      String   @unique
+  expires    DateTime
+
+  @@unique([identifier, token])
+  @@map("verification_tokens")
+}
+
+// ============================================================
+// Phase 2: Audit log (user actions trail)
+// ============================================================
+model AuditLog {
+  id        Int      @id @default(autoincrement())
+  userId    String?  @map("user_id")
+  action    String   // "create_alert"/"update_threshold"/"export_report"/"tag_game"/...
+  resource  String   // "alert:123"/"game:45"/...
+  diff      Json?    // before/after for sensitive changes
+  ip        String?
+  userAgent String?  @map("user_agent")
+  createdAt DateTime @default(now()) @map("created_at")
+
+  user User? @relation(fields: [userId], references: [id], onDelete: SetNull)
+
+  @@index([userId, createdAt(sort: Desc)])
+  @@index([resource])
+  @@map("audit_logs")
+}
+
+// ============================================================
+// Phase 2: Subscription (订阅中心 - user-driven notification rules)
+// ============================================================
+model Subscription {
+  id            Int      @id @default(autoincrement())
+  userId        String   @map("user_id")
+  dimension     String   // "platform"/"genre"/"region"/"keyword"/"game"
+  value         String   // e.g. "app_store", "idle", "US", "roguelike", "123" (game id)
+  channel       String   // "feishu"/"wecom"/"email"
+  channelConfig Json     @default("{}") @map("channel_config")  // {"webhook_url": "..."} or {"email": "..."}
+  schedule      String?  // null = realtime, "daily"/"weekly", or cron expression
+  isActive      Boolean  @default(true) @map("is_active")
+  lastSentAt    DateTime? @map("last_sent_at")
+  createdAt     DateTime @default(now()) @map("created_at")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([dimension, value])
+  @@map("subscriptions")
+}
+
+// ============================================================
+// Phase 2: Genre (aggregation/rollup table — refreshed daily)
+// ============================================================
+model Genre {
+  key            String   @id                                // e.g. "idle", "merge"
+  labelZh        String   @map("label_zh")
+  labelEn        String   @map("label_en")
+  iaaBaseline    Int      @default(0) @map("iaa_baseline")
+  hotGamesCount  Int      @default(0) @map("hot_games_count")  // games with overall_score >= 60
+  momentum       Decimal  @default(0) @db.Decimal(6, 3)         // 7d avg delta
+  topGameIds     Int[]    @default([]) @map("top_game_ids")
+  lastComputedAt DateTime? @map("last_computed_at")
+
+  @@map("genres")
+}
+
+// ============================================================
+// Phase 2: Social content samples (video titles + hook phrases)
+// ============================================================
+model SocialContentSample {
+  id          Int      @id @default(autoincrement())
+  gameId      Int      @map("game_id")
+  platform    String   // "douyin"/"tiktok"/"youtube"/"bilibili"
+  contentType String   @map("content_type") // "video"/"post"
+  externalId  String   @map("external_id")
+  title       String
+  authorName  String?  @map("author_name")
+  hashtags    String[] @default([])
+  viewCount   BigInt   @default(0) @map("view_count")
+  likeCount   BigInt?  @map("like_count")
+  commentCount Int?    @map("comment_count")
+  hookPhrase  String?  @map("hook_phrase")  // LLM-extracted
+  url         String?
+  postedAt    DateTime @map("posted_at")
+  scrapedAt   DateTime @default(now()) @map("scraped_at")
+  metadata    Json     @default("{}")
+
+  game Game @relation(fields: [gameId], references: [id], onDelete: Cascade)
+
+  @@unique([platform, externalId])
+  @@index([gameId, postedAt(sort: Desc)])
+  @@index([platform, viewCount(sort: Desc)])
+  @@map("social_content_samples")
 }

@@ -16,6 +16,7 @@ import asyncio
 import logging
 from datetime import datetime
 
+from ...utils.lang_detect import detect_language, normalize_lang_code
 from .base import BaseReviewScraper, ReviewEntry
 
 logger = logging.getLogger(__name__)
@@ -25,12 +26,16 @@ logger = logging.getLogger(__name__)
 # public review pages.
 TAPTAP_REVIEW_URL = "https://www.taptap.cn/webapiv2/review/v1/by-app"
 
-# Mandatory X-UA header for any webapiv2 call
+# Mandatory X-UA header for any webapiv2 call. The header encodes
+# the calling "app"'s name, version, locale, platform and device
+# fingerprint. Without it TapTap returns 403.
 TAPTAP_HEADERS = {
     "X-UA": (
         "V=1&PN=WebApp&LANG=zh_CN&VN_CODE=102&LOC=CN&PLT=PC"
         "&DS=Android&UID=0&DT=PC&OS=Windows&OSV=10"
     ),
+    "Referer": "https://www.taptap.cn/",
+    "Accept": "application/json",
 }
 
 REVIEWS_PER_PAGE = 10  # TapTap returns ~10 reviews per page
@@ -71,7 +76,31 @@ class TapTapReviewScraper(BaseReviewScraper):
     async def _scrape_via_json_api(
         self, app_id: str, limit: int
     ) -> list[ReviewEntry]:
-        """Primary: call webapiv2 review endpoint with pagination."""
+        """Primary: call webapiv2 review endpoint with pagination.
+
+        Pagination uses the `from` parameter (offset into the list).
+        Response shape (test-resistant; fields are optional):
+
+            {
+              "data": {
+                "list": [
+                  {
+                    "moment": {
+                      "review": {
+                        "id": ..., "score": 1-5,
+                        "contents": {"text": "..."},
+                        "author": {"name": "..."},
+                        "ups": N, "updated_time": <unix>,
+                        "device": "..."
+                      }
+                    }
+                  },
+                  ...
+                ],
+                "next_page": "from=10&limit=10&..."
+              }
+            }
+        """
         client = await self.get_client()
         entries: list[ReviewEntry] = []
 
@@ -99,7 +128,8 @@ class TapTapReviewScraper(BaseReviewScraper):
                 )
                 break
 
-            items = data.get("data", {}).get("list", []) or []
+            payload = data.get("data") or {}
+            items = payload.get("list") or []
             if not items:
                 break
 
@@ -128,7 +158,9 @@ class TapTapReviewScraper(BaseReviewScraper):
                     content = ""
                     contents = review.get("contents") or {}
                     if isinstance(contents, dict):
-                        content = (contents.get("text") or contents.get("raw") or "").strip()
+                        content = (
+                            contents.get("text") or contents.get("raw") or ""
+                        ).strip()
                     if not content:
                         content = (
                             review.get("content")
@@ -183,9 +215,11 @@ class TapTapReviewScraper(BaseReviewScraper):
                             or 0
                         )
 
-                    # Posted timestamp
+                    # Posted timestamp (unix). Prefer updated_time so
+                    # edited reviews surface their most recent state.
                     ts = (
-                        review.get("published_time")
+                        review.get("updated_time")
+                        or review.get("published_time")
                         or review.get("created_time")
                         or moment.get("created_time")
                         or item.get("created_time")
@@ -196,6 +230,8 @@ class TapTapReviewScraper(BaseReviewScraper):
 
                     device = review.get("device") or moment.get("device")
 
+                    detected = detect_language(content) or normalize_lang_code("zh")
+
                     entries.append(
                         ReviewEntry(
                             external_id=review_id,
@@ -203,7 +239,7 @@ class TapTapReviewScraper(BaseReviewScraper):
                             content=content,
                             author_name=author_name,
                             helpful_count=helpful_count,
-                            language="zh",
+                            language=detected,
                             posted_at=posted_at,
                             metadata={
                                 "device": device,
@@ -241,11 +277,13 @@ class TapTapReviewScraper(BaseReviewScraper):
         against the live page if this scraper starts returning 0
         reviews.
 
-        Approach:
-          1. Open /app/{app_id}/review
-          2. Wait for review list container to render
-          3. Scroll to bottom repeatedly to trigger lazy-loading
-          4. Read each review card's sub-elements
+        Current-best selectors (inspect & update as needed):
+          - review item: div[class*="review-item"]
+          - review content: div[class*="review-content"] p
+          - rating: div[class*="star-rating"][aria-label]
+            (aria-label like "4 stars" or "4 分")
+          - author: span[class*="user-name"], a[class*="user-name"]
+          - posted: time[datetime]
 
         If Playwright is unavailable or the page structure has
         changed beyond repair, raise NotImplementedError so the
@@ -273,7 +311,7 @@ class TapTapReviewScraper(BaseReviewScraper):
                 # Adjust these if scraping stops working:
                 review_card_selectors = [
                     '[data-e2e="review-item"]',
-                    '[class*="review-item"]',
+                    'div[class*="review-item"]',
                     '[class*="ReviewItem"]',
                     'article[class*="review"]',
                 ]
@@ -332,9 +370,11 @@ class TapTapReviewScraper(BaseReviewScraper):
                             # fall back to positional id
                             rid = f"{app_id}-dom-{i}"
 
-                        # content text
+                        # content text: prefer <p> nodes inside content container
                         content_node = await card.query_selector(
-                            '[class*="review-content"], [class*="ReviewContent"], '
+                            'div[class*="review-content"] p, '
+                            '[class*="review-content"], '
+                            '[class*="ReviewContent"], '
                             '[class*="review-item-text"]'
                         )
                         content = (
@@ -345,15 +385,18 @@ class TapTapReviewScraper(BaseReviewScraper):
                         if not content:
                             continue
 
-                        # star rating: count filled stars or read aria-label
+                        # star rating: read aria-label from star-rating container
                         rating = None
                         rating_node = await card.query_selector(
-                            '[class*="star"], [class*="Star"]'
+                            'div[class*="star-rating"][aria-label], '
+                            '[class*="star-rating"], '
+                            '[class*="star"][aria-label], '
+                            '[class*="Star"]'
                         )
                         if rating_node:
                             aria = await rating_node.get_attribute("aria-label")
                             if aria:
-                                # aria-label like "5 分" or "5 stars"
+                                # aria-label like "4 stars" or "5 分"
                                 digits = "".join(c for c in aria if c.isdigit())
                                 if digits:
                                     try:
@@ -363,7 +406,9 @@ class TapTapReviewScraper(BaseReviewScraper):
 
                         # author name
                         author_node = await card.query_selector(
-                            '[class*="author-name"], [class*="user-name"], '
+                            'span[class*="user-name"], '
+                            'a[class*="user-name"], '
+                            '[class*="author-name"], '
                             '[class*="UserName"]'
                         )
                         author_name = (
@@ -387,8 +432,10 @@ class TapTapReviewScraper(BaseReviewScraper):
                                 except ValueError:
                                     helpful_count = 0
 
-                        # posted time (relative like "3 天前" or absolute)
-                        time_node = await card.query_selector("time, [class*='time']")
+                        # posted time: time[datetime] is the canonical form
+                        time_node = await card.query_selector(
+                            "time[datetime], time, [class*='time']"
+                        )
                         posted_at_attr = None
                         if time_node:
                             posted_at_attr = await time_node.get_attribute("datetime")
@@ -398,6 +445,8 @@ class TapTapReviewScraper(BaseReviewScraper):
                             else datetime.now()
                         )
 
+                        detected = detect_language(content) or normalize_lang_code("zh")
+
                         entries.append(
                             ReviewEntry(
                                 external_id=str(rid),
@@ -405,7 +454,7 @@ class TapTapReviewScraper(BaseReviewScraper):
                                 content=content,
                                 author_name=author_name,
                                 helpful_count=helpful_count,
-                                language="zh",
+                                language=detected,
                                 posted_at=posted_at,
                                 metadata={"source": "playwright_dom"},
                             )

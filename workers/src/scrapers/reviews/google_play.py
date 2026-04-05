@@ -10,6 +10,7 @@ import asyncio
 import logging
 from datetime import datetime
 
+from ...utils.lang_detect import detect_language, normalize_lang_code
 from .base import BaseReviewScraper, ReviewEntry
 
 logger = logging.getLogger(__name__)
@@ -107,6 +108,10 @@ class GooglePlayReviewScraper(BaseReviewScraper):
                 score = r.get("score")
                 rating = int(score) if score is not None else None
 
+                detected_lang = (
+                    detect_language(content) or normalize_lang_code(lang)
+                )
+
                 entries.append(
                     ReviewEntry(
                         external_id=review_id,
@@ -114,7 +119,7 @@ class GooglePlayReviewScraper(BaseReviewScraper):
                         content=content,
                         author_name=r.get("userName") or None,
                         helpful_count=r.get("thumbsUpCount") or 0,
-                        language=lang,
+                        language=detected_lang,
                         posted_at=_to_datetime(r.get("at")),
                         metadata={
                             "app_version": r.get("reviewCreatedVersion") or r.get("appVersion"),

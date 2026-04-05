@@ -21,6 +21,7 @@ import random
 import urllib.parse
 from datetime import datetime
 
+from ...utils.lang_detect import detect_language, normalize_lang_code
 from .base import BaseReviewScraper, ReviewEntry
 
 logger = logging.getLogger(__name__)
@@ -131,6 +132,11 @@ class SteamReviewScraper(BaseReviewScraper):
                         else datetime.now()
                     )
 
+                    detected_lang = (
+                        detect_language(content)
+                        or normalize_lang_code(r.get("language") or steam_lang)
+                    )
+
                     entries.append(
                         ReviewEntry(
                             external_id=review_id,
@@ -138,7 +144,7 @@ class SteamReviewScraper(BaseReviewScraper):
                             content=content,
                             author_name=author_name,
                             helpful_count=int(r.get("votes_up") or 0),
-                            language=r.get("language") or steam_lang,
+                            language=detected_lang,
                             posted_at=posted_at,
                             metadata={
                                 "voted_up": voted_up,

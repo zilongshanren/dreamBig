@@ -3,6 +3,8 @@ import { notFound } from "next/navigation";
 import { prisma } from "@/lib/prisma";
 import { PLATFORM_LABELS, PLATFORM_COLORS, formatNumber } from "@/lib/utils";
 import { ScoreRadar } from "@/components/charts/score-radar";
+import { SimilarGamesCard } from "@/components/similar-games-card";
+import { SocialContentCard } from "@/components/social-content-card";
 
 export const dynamic = "force-dynamic";
 import { RankingChart } from "@/components/charts/ranking-chart";
@@ -765,6 +767,12 @@ export default async function GameDetailPage({
             </div>
           )}
         </div>
+
+        {/* Similar Games (pgvector) */}
+        <SimilarGamesCard gameId={game.id} />
+
+        {/* Social Content samples (depth) */}
+        <SocialContentCard gameId={game.id} />
 
         {/* Ad Intelligence */}
         <div className="bg-white rounded-lg shadow p-4 col-span-2">

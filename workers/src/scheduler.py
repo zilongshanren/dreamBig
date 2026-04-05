@@ -103,6 +103,31 @@ def enqueue_internal_jobs():
     queue.enqueue("src.worker.poll_internal_jobs", job_timeout="30m")
 
 
+def enqueue_embedding_refresh():
+    queue.enqueue("src.worker.run_embedding_refresh", job_timeout="60m")
+    logger.info("Enqueued embedding refresh")
+
+
+def enqueue_genre_aggregation():
+    queue.enqueue("src.worker.run_genre_aggregation", job_timeout="10m")
+    logger.info("Enqueued genre aggregation")
+
+
+def enqueue_hook_extraction():
+    queue.enqueue("src.worker.run_hook_extraction", job_timeout="30m")
+    logger.info("Enqueued hook extraction")
+
+
+def enqueue_daily_digest():
+    queue.enqueue("src.worker.run_daily_digest", job_timeout="20m")
+    logger.info("Enqueued daily digest")
+
+
+def enqueue_scrape_social_depth():
+    queue.enqueue("src.worker.run_scrape_social_depth", job_timeout="60m")
+    logger.info("Enqueued social depth scrape")
+
+
 def main():
     scheduler = BlockingScheduler()
 
@@ -224,6 +249,21 @@ def main():
     scheduler.add_job(
         enqueue_internal_jobs, "interval", minutes=5, id="internal_jobs",
     )
+
+    # === 08:45: Genre aggregation (after scoring) ===
+    scheduler.add_job(enqueue_genre_aggregation, "cron", hour=8, minute=45, id="genre_aggregation")
+
+    # === 09:15: Social depth scraping (after review scraping at 09:00) ===
+    scheduler.add_job(enqueue_scrape_social_depth, "cron", hour=9, minute=15, id="social_depth")
+
+    # === 11:15: Hook phrase extraction (Haiku, after social depth) ===
+    scheduler.add_job(enqueue_hook_extraction, "cron", hour=11, minute=15, id="hook_extraction")
+
+    # === 12:00: Daily digest (after all pipelines done) ===
+    scheduler.add_job(enqueue_daily_digest, "cron", hour=12, minute=0, id="daily_digest")
+
+    # === Weekly: embedding refresh (Sunday 3 AM, low-traffic window) ===
+    scheduler.add_job(enqueue_embedding_refresh, "cron", day_of_week="sun", hour=3, minute=0, id="embedding_refresh")
 
     logger.info("Scheduler started. Jobs registered:")
     for job in scheduler.get_jobs():

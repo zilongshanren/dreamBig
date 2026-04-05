@@ -14,8 +14,11 @@ const NAV_ITEMS = [
   { href: "/rankings", label: "排行榜", icon: "🏆" },
   { href: "/trending", label: "趋势", icon: "📈" },
   { href: "/iaa", label: "IAA 顾问", icon: "🎯" },
+  { href: "/genres", label: "赛道分析", icon: "📊" },
   { href: "/alerts", label: "告警", icon: "🔔" },
+  { href: "/subscriptions", label: "订阅", icon: "📬" },
   { href: "/admin", label: "管理", icon: "⚙️" },
+  { href: "/account", label: "账户", icon: "👤" },
 ];
 
 export default function RootLayout({

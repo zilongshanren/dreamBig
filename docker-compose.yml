@@ -44,6 +44,8 @@ services:
       DATABASE_URL: postgresql://dreambig:dreambig@db:5432/dreambig
       REDIS_URL: redis://redis:6379/0
       NEXT_PUBLIC_APP_URL: ${NEXT_PUBLIC_APP_URL:-http://localhost:3000}
+      NEXTAUTH_SECRET: ${NEXTAUTH_SECRET:-}
+      NEXTAUTH_URL: ${NEXTAUTH_URL:-http://localhost:3000}
     depends_on:
       db:
         condition: service_healthy
@@ -69,6 +71,13 @@ services:
       FEISHU_WEBHOOK_URL: ${FEISHU_WEBHOOK_URL:-}
       NEXT_PUBLIC_APP_URL: ${NEXT_PUBLIC_APP_URL:-http://localhost:3000}
       POE_API_KEY: ${POE_API_KEY:-}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      YOUTUBE_API_KEY: ${YOUTUBE_API_KEY:-}
+      SMTP_HOST: ${SMTP_HOST:-}
+      SMTP_PORT: ${SMTP_PORT:-587}
+      SMTP_USER: ${SMTP_USER:-}
+      SMTP_PASSWORD: ${SMTP_PASSWORD:-}
+      SMTP_FROM: ${SMTP_FROM:-}
     depends_on:
       db:
         condition: service_healthy
@@ -90,6 +99,15 @@ services:
       DATABASE_URL: postgresql://dreambig:dreambig@db:5432/dreambig
       REDIS_URL: redis://redis:6379/0
       POE_API_KEY: ${POE_API_KEY:-}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      YOUTUBE_API_KEY: ${YOUTUBE_API_KEY:-}
+      SMTP_HOST: ${SMTP_HOST:-}
+      SMTP_PORT: ${SMTP_PORT:-587}
+      SMTP_USER: ${SMTP_USER:-}
+      SMTP_PASSWORD: ${SMTP_PASSWORD:-}
+      SMTP_FROM: ${SMTP_FROM:-}
+      NEXT_PUBLIC_APP_URL: ${NEXT_PUBLIC_APP_URL:-http://localhost:3000}
+      FEISHU_WEBHOOK_URL: ${FEISHU_WEBHOOK_URL:-}
     depends_on:
       db:
         condition: service_healthy
