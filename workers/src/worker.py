@@ -461,6 +461,7 @@ def run_scrape_all_reviews(limit_per_game: int = 100) -> int:
                 logger.warning(
                     f"Review scrape failed for {platform}/{platform_id_value}: {e}"
                 )
+                conn.rollback()
 
         _record_job(conn, "reviews", "scrape_reviews", "success", total)
         logger.info(f"Bulk review scrape complete: {total} reviews total")
@@ -501,6 +502,90 @@ def run_report_generation(limit: int = 20) -> int:
     count = _run(DB_URL, limit=limit)
     logger.info(f"Report generation complete: {count} reports")
     return count
+
+
+def run_embedding_refresh(limit: int = 200):
+    """Regenerate embeddings for new or stale games (> 7 days old)."""
+    from src.processors.embedding import run_embedding_refresh as _run
+    return _run(DB_URL, limit=limit)
+
+
+def run_genre_aggregation():
+    """Refresh Genre rollup table."""
+    from src.processors.genre_aggregation import run_genre_aggregation as _run
+    return _run(DB_URL)
+
+
+def run_hook_extraction(limit: int = 200):
+    """Extract hook phrases for SocialContentSample rows with null hook_phrase."""
+    from src.processors.hook_extraction import run_hook_extraction as _run
+    return _run(DB_URL, limit=limit)
+
+
+def run_daily_digest():
+    """Dispatch daily digests to active subscribers."""
+    from src.processors.daily_digest import run_daily_digest as _run
+    return _run(DB_URL)
+
+
+def run_scrape_social_depth(limit_per_game: int = 20):
+    """Scrape deep social content (video titles + hashtags + metrics) for high-potential games."""
+    from src.scrapers.social_depth import SocialDepthScraper
+    import json as _json
+
+    scraper = SocialDepthScraper()
+
+    with psycopg.connect(DB_URL) as conn:
+        # Only for high-potential games + watchlisted
+        games = conn.execute(
+            """
+            SELECT g.id, COALESCE(g.name_zh, g.name_en) AS name
+            FROM games g
+            LEFT JOIN potential_scores ps ON ps.game_id = g.id AND ps.scored_at = CURRENT_DATE
+            WHERE ps.overall_score >= 60
+               OR EXISTS (SELECT 1 FROM game_tags gt WHERE gt.game_id = g.id AND gt.tag = 'watchlist')
+            ORDER BY ps.overall_score DESC NULLS LAST
+            LIMIT 30
+            """
+        ).fetchall()
+
+        total = 0
+        for game_id, name in games:
+            if not name:
+                continue
+            try:
+                contents = asyncio.run(scraper.fetch_all(name, limit_per_platform=limit_per_game))
+                for c in contents:
+                    conn.execute(
+                        """
+                        INSERT INTO social_content_samples
+                        (game_id, platform, content_type, external_id, title, author_name, hashtags, view_count, like_count, comment_count, url, posted_at, metadata, scraped_at)
+                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb, NOW())
+                        ON CONFLICT (platform, external_id) DO UPDATE SET
+                            view_count = EXCLUDED.view_count,
+                            like_count = EXCLUDED.like_count,
+                            comment_count = EXCLUDED.comment_count,
+                            scraped_at = NOW()
+                        """,
+                        (
+                            game_id, c.platform, c.content_type, c.external_id,
+                            c.title, c.author_name, c.hashtags,
+                            c.view_count, c.like_count, c.comment_count,
+                            c.url, c.posted_at, _json.dumps(c.metadata),
+                        ),
+                    )
+                conn.commit()
+                total += len(contents)
+                logger.info(f"Social depth for '{name}': {len(contents)} items")
+            except Exception as e:
+                logger.warning(f"Social depth failed for '{name}': {e}")
+
+    try:
+        asyncio.run(scraper.close())
+    except RuntimeError:
+        pass
+    logger.info(f"Social depth scrape complete: {total} items")
+    return total
 
 
 def poll_internal_jobs() -> None:
@@ -580,6 +665,17 @@ if __name__ == "__main__":
         print(run_report_generation(limit=_limit))
     elif len(sys.argv) >= 2 and sys.argv[1] == "poll_internal":
         poll_internal_jobs()
+    elif len(sys.argv) >= 2 and sys.argv[1] == "refresh_embeddings":
+        limit = int(sys.argv[2]) if len(sys.argv) > 2 else 200
+        print(run_embedding_refresh(limit=limit))
+    elif len(sys.argv) >= 2 and sys.argv[1] == "aggregate_genres":
+        print(run_genre_aggregation())
+    elif len(sys.argv) >= 2 and sys.argv[1] == "extract_hooks":
+        print(run_hook_extraction())
+    elif len(sys.argv) >= 2 and sys.argv[1] == "daily_digest":
+        print(run_daily_digest())
+    elif len(sys.argv) >= 2 and sys.argv[1] == "scrape_social_depth":
+        print(run_scrape_social_depth())
     elif len(sys.argv) >= 3:
         platform = sys.argv[1]
         chart_type = sys.argv[2]
@@ -594,4 +690,9 @@ if __name__ == "__main__":
         print("       python -m src.worker cluster_topics")
         print("       python -m src.worker generate_reports [limit]")
         print("       python -m src.worker poll_internal")
+        print("       python -m src.worker refresh_embeddings [limit]")
+        print("       python -m src.worker aggregate_genres")
+        print("       python -m src.worker extract_hooks")
+        print("       python -m src.worker daily_digest")
+        print("       python -m src.worker scrape_social_depth")
         print("Example: python -m src.worker app_store top_free US")
