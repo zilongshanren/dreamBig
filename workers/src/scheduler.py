@@ -68,6 +68,41 @@ def enqueue_ad_intel():
     logger.info("Enqueued ad intel job")
 
 
+def enqueue_scrape_reviews():
+    """Enqueue bulk review scraping for high-potential games."""
+    queue.enqueue("src.worker.run_scrape_all_reviews", job_timeout="60m")
+    logger.info("Enqueued review scraping")
+
+
+def enqueue_sentiment_classification():
+    """Enqueue sentiment classification over pending reviews."""
+    queue.enqueue("src.worker.run_sentiment_classification", job_timeout="30m")
+    logger.info("Enqueued sentiment classification")
+
+
+def enqueue_topic_extraction():
+    """Enqueue topic extraction over sentiment-labeled reviews."""
+    queue.enqueue("src.worker.run_topic_extraction", job_timeout="30m")
+    logger.info("Enqueued topic extraction")
+
+
+def enqueue_topic_clustering():
+    """Enqueue per-game topic clustering + summarization."""
+    queue.enqueue("src.worker.run_topic_clustering", job_timeout="30m")
+    logger.info("Enqueued topic clustering")
+
+
+def enqueue_report_generation():
+    """Enqueue game report generation (expensive, LLM Opus)."""
+    queue.enqueue("src.worker.run_report_generation", job_timeout="60m")
+    logger.info("Enqueued game report generation")
+
+
+def enqueue_internal_jobs():
+    """Enqueue polling for web-triggered internal jobs."""
+    queue.enqueue("src.worker.poll_internal_jobs", job_timeout="30m")
+
+
 def main():
     scheduler = BlockingScheduler()
 
@@ -158,6 +193,36 @@ def main():
     )
     scheduler.add_job(
         enqueue_alerts, "cron", hour=8, minute=30, id="alerts",
+    )
+
+    # === 09:00: Review scraping (after scoring so we know which games to focus on) ===
+    scheduler.add_job(
+        enqueue_scrape_reviews, "cron", hour=9, minute=0, id="scrape_reviews",
+    )
+
+    # === 10:00: Review NLP pipeline (sentiment -> topics -> clustering) ===
+    scheduler.add_job(
+        enqueue_sentiment_classification, "cron", hour=10, minute=0,
+        id="sentiment_classification",
+    )
+    scheduler.add_job(
+        enqueue_topic_extraction, "cron", hour=10, minute=30,
+        id="topic_extraction",
+    )
+    scheduler.add_job(
+        enqueue_topic_clustering, "cron", hour=11, minute=0,
+        id="topic_clustering",
+    )
+
+    # === 11:30: Generate game reports (LLM Opus, expensive, limit=20) ===
+    scheduler.add_job(
+        enqueue_report_generation, "cron", hour=11, minute=30,
+        id="report_generation",
+    )
+
+    # === Every 5 minutes: poll for web-triggered manual report generation ===
+    scheduler.add_job(
+        enqueue_internal_jobs, "interval", minutes=5, id="internal_jobs",
     )
 
     logger.info("Scheduler started. Jobs registered:")

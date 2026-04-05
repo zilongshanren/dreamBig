@@ -17,6 +17,8 @@ dependencies = [
     "lxml>=5.0",
     "gplay-scraper>=1.0",
     "curl-cffi>=0.7",
+    "openai>=1.50",
+    "tenacity>=8.2",
 ]
 
 [project.optional-dependencies]

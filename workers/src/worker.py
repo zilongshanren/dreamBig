@@ -283,12 +283,303 @@ def run_fetch_details():
         logger.info(f"Details fetch complete: {total} games updated")
 
 
+def run_scrape_reviews(
+    platform: str,
+    platform_listing_id: int,
+    platform_id: str,
+    region: str = "US",
+    lang: str = "en",
+    limit: int = 200,
+) -> int:
+    """Scrape reviews for a single platform listing and insert into reviews table.
+
+    Returns number of reviews inserted (pre-dedup).
+    """
+    from src.scrapers.reviews import (
+        AppStoreReviewScraper,
+        GooglePlayReviewScraper,
+        SteamReviewScraper,
+        TapTapReviewScraper,
+    )
+
+    REVIEW_SCRAPER_MAP = {
+        "google_play": GooglePlayReviewScraper,
+        "steam": SteamReviewScraper,
+        "app_store": AppStoreReviewScraper,
+        "taptap": TapTapReviewScraper,
+    }
+
+    scraper_cls = REVIEW_SCRAPER_MAP.get(platform)
+    if not scraper_cls:
+        logger.warning(f"No review scraper for platform '{platform}'")
+        return 0
+
+    logger.info(f"Scraping reviews: {platform}/{platform_id} listing={platform_listing_id}")
+    scraper = scraper_cls()
+    try:
+        reviews = asyncio.run(
+            scraper.scrape_reviews_safe(
+                platform_id, region=region, lang=lang, limit=limit
+            )
+        )
+    finally:
+        try:
+            asyncio.run(scraper.close())
+        except RuntimeError:
+            pass
+
+    inserted = 0
+    try:
+        with psycopg.connect(DB_URL) as conn:
+            for r in reviews:
+                conn.execute(
+                    """
+                    INSERT INTO reviews
+                        (platform_listing_id, external_id, rating, content,
+                         author_name, helpful_count, language, posted_at, scraped_at)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, NOW())
+                    ON CONFLICT (platform_listing_id, external_id) DO NOTHING
+                    """,
+                    (
+                        platform_listing_id,
+                        r.external_id,
+                        r.rating,
+                        (r.content or "")[:4000],
+                        r.author_name,
+                        r.helpful_count,
+                        r.language,
+                        r.posted_at,
+                    ),
+                )
+                inserted += 1
+            conn.commit()
+            _record_job(conn, platform, "scrape_reviews", "success", inserted)
+    except Exception as e:
+        logger.error(f"Review insert failed for {platform}/{platform_id}: {e}")
+        try:
+            with psycopg.connect(DB_URL) as conn:
+                _record_job(conn, platform, "scrape_reviews", "failed", inserted, str(e))
+        except Exception:
+            pass
+        raise
+
+    logger.info(f"Scraped {inserted} reviews for {platform}/{platform_id}")
+    return inserted
+
+
+def run_scrape_all_reviews(limit_per_game: int = 100) -> int:
+    """Scrape reviews for all platform_listings of games above threshold score."""
+    import json as _json
+
+    from src.scrapers.reviews import (
+        AppStoreReviewScraper,
+        GooglePlayReviewScraper,
+        SteamReviewScraper,
+        TapTapReviewScraper,
+    )
+
+    REVIEW_SCRAPER_MAP = {
+        "google_play": GooglePlayReviewScraper,
+        "steam": SteamReviewScraper,
+        "app_store": AppStoreReviewScraper,
+        "taptap": TapTapReviewScraper,
+    }
+
+    logger.info("Starting bulk review scrape for high-potential games")
+    with psycopg.connect(DB_URL) as conn:
+        # Only scrape reviews for games with potential score >= 50 OR tagged as watchlist
+        listings = conn.execute(
+            """
+            SELECT pl.id, pl.platform, pl.platform_id, pl.metadata
+            FROM platform_listings pl
+            JOIN games g ON pl.game_id = g.id
+            LEFT JOIN potential_scores ps ON ps.game_id = g.id AND ps.scored_at = CURRENT_DATE
+            WHERE pl.platform = ANY(%s)
+              AND (
+                  ps.overall_score >= 50
+                  OR EXISTS (
+                      SELECT 1 FROM game_tags gt
+                      WHERE gt.game_id = g.id AND gt.tag = 'watchlist'
+                  )
+              )
+            ORDER BY ps.overall_score DESC NULLS LAST
+            LIMIT 100
+            """,
+            (list(REVIEW_SCRAPER_MAP.keys()),),
+        ).fetchall()
+
+        total = 0
+        for listing_id, platform, platform_id_value, metadata in listings:
+            scraper_cls = REVIEW_SCRAPER_MAP.get(platform)
+            if not scraper_cls:
+                continue
+            try:
+                scraper = scraper_cls()
+                # Determine region/lang from listing metadata or defaults
+                region = "US"
+                lang = "en"
+                if metadata:
+                    meta = metadata if isinstance(metadata, dict) else _json.loads(metadata)
+                    region = meta.get("region", region)
+                    lang = meta.get("lang", lang)
+                reviews = asyncio.run(
+                    scraper.scrape_reviews_safe(
+                        platform_id_value, region=region, lang=lang, limit=limit_per_game
+                    )
+                )
+                try:
+                    asyncio.run(scraper.close())
+                except RuntimeError:
+                    pass
+
+                for r in reviews:
+                    conn.execute(
+                        """
+                        INSERT INTO reviews
+                            (platform_listing_id, external_id, rating, content,
+                             author_name, helpful_count, language, posted_at, scraped_at)
+                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, NOW())
+                        ON CONFLICT (platform_listing_id, external_id) DO NOTHING
+                        """,
+                        (
+                            listing_id,
+                            r.external_id,
+                            r.rating,
+                            (r.content or "")[:4000],
+                            r.author_name,
+                            r.helpful_count,
+                            r.language,
+                            r.posted_at,
+                        ),
+                    )
+                conn.commit()
+                total += len(reviews)
+                logger.info(
+                    f"Scraped {len(reviews)} reviews for {platform}/{platform_id_value}"
+                )
+            except Exception as e:
+                logger.warning(
+                    f"Review scrape failed for {platform}/{platform_id_value}: {e}"
+                )
+
+        _record_job(conn, "reviews", "scrape_reviews", "success", total)
+        logger.info(f"Bulk review scrape complete: {total} reviews total")
+        return total
+
+
+def run_sentiment_classification() -> int:
+    """Classify pending reviews. Uses Poe Haiku."""
+    logger.info("Starting sentiment classification")
+    from src.processors.review_analysis import run_sentiment_classification as _run
+    count = _run(DB_URL)
+    logger.info(f"Sentiment classification complete: {count} reviews")
+    return count
+
+
+def run_topic_extraction() -> int:
+    """Extract topic tags for sentiment-labeled reviews. Uses Poe Haiku."""
+    logger.info("Starting topic extraction")
+    from src.processors.review_analysis import run_topic_extraction as _run
+    count = _run(DB_URL)
+    logger.info(f"Topic extraction complete: {count} reviews")
+    return count
+
+
+def run_topic_clustering() -> int:
+    """Cluster per-game topics into summaries. Uses Poe Sonnet."""
+    logger.info("Starting topic clustering")
+    from src.processors.review_analysis import run_topic_clustering as _run
+    count = _run(DB_URL)
+    logger.info(f"Topic clustering complete: {count} summaries")
+    return count
+
+
+def run_report_generation(limit: int = 20) -> int:
+    """Generate game reports for top-N potential games. Uses Poe Opus."""
+    logger.info(f"Starting game report generation (limit={limit})")
+    from src.processors.report_generator import run_report_generation as _run
+    count = _run(DB_URL, limit=limit)
+    logger.info(f"Report generation complete: {count} reports")
+    return count
+
+
+def poll_internal_jobs() -> None:
+    """Poll scrape_jobs for web-triggered jobs (report_generation, etc.)."""
+    import json as _json
+
+    with psycopg.connect(DB_URL) as conn:
+        rows = conn.execute(
+            """
+            SELECT id, job_type, error_message
+            FROM scrape_jobs
+            WHERE platform = 'internal' AND status = 'pending'
+            ORDER BY id
+            LIMIT 10
+            """
+        ).fetchall()
+
+        if not rows:
+            return
+
+        logger.info(f"Polling internal jobs: found {len(rows)} pending")
+
+        for job_id, job_type, payload_str in rows:
+            try:
+                payload = _json.loads(payload_str or "{}")
+                conn.execute(
+                    "UPDATE scrape_jobs SET status='running', started_at=NOW() WHERE id=%s",
+                    (job_id,),
+                )
+                conn.commit()
+
+                if job_type == "report_generation":
+                    from src.processors.report_generator import ReportGenerator
+
+                    game_id = int(payload.get("gameId"))
+                    gen = ReportGenerator(DB_URL)
+                    asyncio.run(gen.generate_for_game(game_id))
+                    asyncio.run(gen.client.close())
+                    conn.execute(
+                        "UPDATE scrape_jobs SET status='success', items_scraped=1, finished_at=NOW() WHERE id=%s",
+                        (job_id,),
+                    )
+                    logger.info(f"Internal job {job_id}: report_generation for game {game_id} done")
+                else:
+                    conn.execute(
+                        "UPDATE scrape_jobs SET status='failed', error_message='unknown job_type', finished_at=NOW() WHERE id=%s",
+                        (job_id,),
+                    )
+                    logger.warning(f"Internal job {job_id}: unknown job_type '{job_type}'")
+
+                conn.commit()
+            except Exception as e:
+                conn.execute(
+                    "UPDATE scrape_jobs SET status='failed', error_message=%s, finished_at=NOW() WHERE id=%s",
+                    (str(e), job_id),
+                )
+                conn.commit()
+                logger.error(f"Internal job {job_id} failed: {e}")
+
+
 if __name__ == "__main__":
     # For local testing: run a single scrape
     import sys
 
     if len(sys.argv) >= 2 and sys.argv[1] == "fetch_details":
         run_fetch_details()
+    elif len(sys.argv) >= 2 and sys.argv[1] == "scrape_reviews":
+        run_scrape_all_reviews()
+    elif len(sys.argv) >= 2 and sys.argv[1] == "classify_sentiment":
+        print(run_sentiment_classification())
+    elif len(sys.argv) >= 2 and sys.argv[1] == "extract_topics":
+        print(run_topic_extraction())
+    elif len(sys.argv) >= 2 and sys.argv[1] == "cluster_topics":
+        print(run_topic_clustering())
+    elif len(sys.argv) >= 2 and sys.argv[1] == "generate_reports":
+        _limit = int(sys.argv[2]) if len(sys.argv) > 2 else 20
+        print(run_report_generation(limit=_limit))
+    elif len(sys.argv) >= 2 and sys.argv[1] == "poll_internal":
+        poll_internal_jobs()
     elif len(sys.argv) >= 3:
         platform = sys.argv[1]
         chart_type = sys.argv[2]
@@ -297,4 +588,10 @@ if __name__ == "__main__":
     else:
         print("Usage: python -m src.worker <platform> <chart_type> [region]")
         print("       python -m src.worker fetch_details")
+        print("       python -m src.worker scrape_reviews")
+        print("       python -m src.worker classify_sentiment")
+        print("       python -m src.worker extract_topics")
+        print("       python -m src.worker cluster_topics")
+        print("       python -m src.worker generate_reports [limit]")
+        print("       python -m src.worker poll_internal")
         print("Example: python -m src.worker app_store top_free US")

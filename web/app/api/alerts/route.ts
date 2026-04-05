@@ -28,6 +28,8 @@ export async function POST(req: NextRequest) {
     const alert = await prisma.alert.create({
       data: {
         name: body.name,
+        alertType: body.alertType || "ranking_jump",
+        severity: body.severity || "P2",
         conditions: body.conditions,
         notifyChannel: body.notifyChannel || "feishu",
         webhookUrl: body.webhookUrl,

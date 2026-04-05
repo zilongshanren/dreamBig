@@ -21,15 +21,24 @@ model Game {
   iaaSuitability Int       @default(0) @map("iaa_suitability")
   metadata       Json      @default("{}")
   thumbnailUrl   String?   @map("thumbnail_url")
+  positioning    String?
+  coreLoop       String?   @map("core_loop")
+  metaLoop       String?   @map("meta_loop")
+  pleasurePoints String[]  @default([]) @map("pleasure_points")
+  replayDrivers  String[]  @default([]) @map("replay_drivers")
+  iaaGrade       String?   @map("iaa_grade")
   createdAt      DateTime  @default(now()) @map("created_at")
   updatedAt      DateTime  @default(now()) @updatedAt @map("updated_at")
 
-  platformListings PlatformListing[]
-  socialSignals    SocialSignal[]
-  adIntelligence   AdIntelligence[]
-  potentialScores  PotentialScore[]
-  alertEvents      AlertEvent[]
-  gameTags         GameTag[]
+  platformListings    PlatformListing[]
+  socialSignals       SocialSignal[]
+  adIntelligence      AdIntelligence[]
+  potentialScores     PotentialScore[]
+  alertEvents         AlertEvent[]
+  gameTags            GameTag[]
+  reviewTopicSummaries ReviewTopicSummary[]
+  gameReport          GameReport?
+  gameEmbedding       GameEmbedding?
 
   @@map("games")
 }
@@ -53,6 +62,7 @@ model PlatformListing {
 
   game              Game               @relation(fields: [gameId], references: [id])
   rankingSnapshots  RankingSnapshot[]
+  reviews           Review[]
 
   @@unique([platform, platformId])
   @@map("platform_listings")
@@ -150,6 +160,8 @@ model PotentialScore {
 model Alert {
   id            Int      @id @default(autoincrement())
   name          String
+  alertType     String   @map("alert_type") // ranking_jump, review_burst, social_burst, steam_momentum, taptap_heat
+  severity      String   @default("P2") // P1, P2, P3
   conditions    Json     // {"min_score": 70, "genres": ["puzzle","idle"]}
   notifyChannel String   @default("feishu") @map("notify_channel")
   webhookUrl    String?  @map("webhook_url")
@@ -170,6 +182,9 @@ model AlertEvent {
   alertId      Int      @map("alert_id")
   gameId       Int      @map("game_id")
   score        Int?     @db.SmallInt
+  alertType    String?  @map("alert_type")
+  severity     String?
+  reason       String?
   triggeredAt  DateTime @default(now()) @map("triggered_at")
   acknowledged Boolean  @default(false)
 
@@ -209,4 +224,84 @@ model ScrapeJob {
   retryCount   Int       @default(0) @map("retry_count")
 
   @@map("scrape_jobs")
+}
+
+// ============================================================
+// Reviews (scraped review content per platform listing)
+// ============================================================
+model Review {
+  id                  Int       @id @default(autoincrement())
+  platformListingId   Int       @map("platform_listing_id")
+  externalId          String    @map("external_id")
+  rating              Int?      @db.SmallInt
+  content             String    @db.Text
+  authorName          String?   @map("author_name")
+  helpfulCount        Int?      @map("helpful_count")
+  language            String?
+  postedAt            DateTime  @map("posted_at")
+  sentiment           String?
+  topics              String[]  @default([])
+  sentimentConfidence Decimal?  @map("sentiment_confidence") @db.Decimal(3, 2)
+  scrapedAt           DateTime  @default(now()) @map("scraped_at")
+
+  platformListing PlatformListing @relation(fields: [platformListingId], references: [id])
+
+  @@unique([platformListingId, externalId])
+  @@index([platformListingId, postedAt(sort: Desc)])
+  @@index([postedAt(sort: Desc)])
+  @@map("reviews")
+}
+
+// ============================================================
+// Review topic summaries (LLM-clustered topics per game)
+// ============================================================
+model ReviewTopicSummary {
+  id              Int      @id @default(autoincrement())
+  gameId          Int      @map("game_id")
+  topic           String
+  sentiment       String   // positive, negative
+  sampleReviewIds Int[]    @default([]) @map("sample_review_ids")
+  snippet         String
+  reviewCount     Int      @map("review_count")
+  computedAt      DateTime @map("computed_at") @db.Date
+
+  game Game @relation(fields: [gameId], references: [id])
+
+  @@unique([gameId, topic, sentiment, computedAt])
+  @@map("review_topic_summaries")
+}
+
+// ============================================================
+// Game reports (LLM-generated full report, one per game)
+// ============================================================
+model GameReport {
+  id            Int      @id @default(autoincrement())
+  gameId        Int      @unique @map("game_id")
+  payload       Json
+  promptVersion String   @map("prompt_version")
+  modelUsed     String   @map("model_used")
+  evidenceCount Int      @map("evidence_count")
+  confidence    Decimal  @db.Decimal(3, 2)
+  tokensUsed    Int?     @map("tokens_used")
+  costUsd       Decimal? @map("cost_usd") @db.Decimal(10, 4)
+  generatedAt   DateTime @map("generated_at")
+
+  game Game @relation(fields: [gameId], references: [id])
+
+  @@map("game_reports")
+}
+
+// ============================================================
+// Game embeddings (vector embeddings for similarity search)
+// ============================================================
+model GameEmbedding {
+  gameId     Int                          @id @map("game_id")
+  embedding  Unsupported("vector(1536)")
+  source     String
+  dim        Int                          @default(1536)
+  computedAt DateTime                     @map("computed_at")
+
+  game Game @relation(fields: [gameId], references: [id])
+
+  @@map("game_embeddings")
 }

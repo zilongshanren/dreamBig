@@ -3,3 +3,6 @@ CREATE EXTENSION IF NOT EXISTS pg_trgm;
 
 -- Enable btree_gin for combined index support
 CREATE EXTENSION IF NOT EXISTS btree_gin;
+
+-- Enable pgvector for embedding similarity search
+CREATE EXTENSION IF NOT EXISTS vector;

@@ -13,6 +13,7 @@ const NAV_ITEMS = [
   { href: "/games", label: "游戏库", icon: "🎮" },
   { href: "/rankings", label: "排行榜", icon: "🏆" },
   { href: "/trending", label: "趋势", icon: "📈" },
+  { href: "/iaa", label: "IAA 顾问", icon: "🎯" },
   { href: "/alerts", label: "告警", icon: "🔔" },
   { href: "/admin", label: "管理", icon: "⚙️" },
 ];

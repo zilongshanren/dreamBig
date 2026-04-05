@@ -7,7 +7,39 @@ import { ScoreRadar } from "@/components/charts/score-radar";
 export const dynamic = "force-dynamic";
 import { RankingChart } from "@/components/charts/ranking-chart";
 
+type GameReportPayload = {
+  positioning?: string;
+  core_loop?: { description: string; evidence_refs: string[] };
+  meta_loop?: { description: string; evidence_refs: string[] };
+  pleasure_points?: string[];
+  replay_drivers?: string[];
+  spread_points?: string[];
+  iaa_advice?: {
+    overall_grade: "S" | "A" | "B" | "C" | "D";
+    suitable_placements: string[];
+    forbidden_placements: string[];
+    risks: string[];
+    ab_test_order: string[];
+    confidence: number;
+  };
+  overall_confidence?: number;
+};
+
+function parseEvidenceRef(ref: string): { type: string; id?: string } {
+  const [type, id] = ref.split(":");
+  return { type: type || "unknown", id };
+}
+
+const IAA_GRADE_COLORS: Record<string, string> = {
+  S: "bg-green-500 text-white",
+  A: "bg-lime-500 text-white",
+  B: "bg-yellow-500 text-white",
+  C: "bg-orange-500 text-white",
+  D: "bg-red-500 text-white",
+};
+
 async function getGame(id: number) {
+  // Try full query first with new relations
   try {
     const game = await prisma.game.findUnique({
       where: { id },
@@ -33,11 +65,47 @@ async function getGame(id: number) {
           take: 7,
         },
         gameTags: true,
+        gameReport: true,
+        reviewTopicSummaries: {
+          orderBy: { computedAt: "desc" },
+          take: 30,
+        },
       },
     });
     return game;
   } catch {
-    return null;
+    // Fallback: older schema without gameReport / reviewTopicSummaries
+    try {
+      const game = await prisma.game.findUnique({
+        where: { id },
+        include: {
+          platformListings: {
+            include: {
+              rankingSnapshots: {
+                orderBy: { snapshotDate: "desc" },
+                take: 30,
+              },
+            },
+          },
+          potentialScores: {
+            orderBy: { scoredAt: "desc" },
+            take: 1,
+          },
+          socialSignals: {
+            orderBy: { signalDate: "desc" },
+            take: 14,
+          },
+          adIntelligence: {
+            orderBy: { signalDate: "desc" },
+            take: 7,
+          },
+          gameTags: true,
+        },
+      });
+      return game;
+    } catch {
+      return null;
+    }
   }
 }
 
@@ -74,6 +142,97 @@ export default async function GameDetailPage({
         { dimension: "广告活跃", value: score.adActivity, fullMark: 100 },
       ]
     : [];
+
+  // Parse GameReport payload
+  const gameAny = game as any;
+  const gameReport = gameAny.gameReport as
+    | {
+        payload: unknown;
+        confidence: unknown;
+        generatedAt: Date;
+      }
+    | null
+    | undefined;
+  const reportPayload = gameReport?.payload
+    ? (gameReport.payload as unknown as GameReportPayload)
+    : null;
+  const reportConfidence = gameReport
+    ? Number(gameReport.confidence)
+    : reportPayload?.overall_confidence ?? 0;
+
+  // Positioning: prefer payload, fallback to Game.positioning
+  const positioning =
+    reportPayload?.positioning || game.positioning || null;
+
+  // Review topic summaries (keep most recent computed_at per topic, top 10 per sentiment)
+  const topicSummaries = (gameAny.reviewTopicSummaries as
+    | Array<{
+        id: number;
+        topic: string;
+        sentiment: string;
+        snippet: string;
+        reviewCount: number;
+        computedAt: Date;
+      }>
+    | undefined) ?? [];
+
+  // Dedupe: keep most recent computedAt per (topic, sentiment)
+  const topicMap = new Map<
+    string,
+    {
+      topic: string;
+      sentiment: string;
+      snippet: string;
+      reviewCount: number;
+      computedAt: Date;
+    }
+  >();
+  for (const t of topicSummaries) {
+    const key = `${t.topic}__${t.sentiment}`;
+    const existing = topicMap.get(key);
+    if (!existing || t.computedAt > existing.computedAt) {
+      topicMap.set(key, t);
+    }
+  }
+  const uniqueTopics = Array.from(topicMap.values());
+  const positiveTopics = uniqueTopics
+    .filter((t) => t.sentiment === "positive")
+    .sort((a, b) => b.reviewCount - a.reviewCount)
+    .slice(0, 10);
+  const negativeTopics = uniqueTopics
+    .filter((t) => t.sentiment === "negative")
+    .sort((a, b) => b.reviewCount - a.reviewCount)
+    .slice(0, 10);
+
+  // IAA advice shortcuts
+  const iaaAdvice = reportPayload?.iaa_advice;
+  const iaaGrade = iaaAdvice?.overall_grade || game.iaaGrade || null;
+  const iaaConfidence = iaaAdvice?.confidence ?? reportConfidence;
+
+  // Combined pleasure / replay / spread
+  const pleasurePoints =
+    reportPayload?.pleasure_points && reportPayload.pleasure_points.length > 0
+      ? reportPayload.pleasure_points
+      : game.pleasurePoints || [];
+  const replayDrivers =
+    reportPayload?.replay_drivers && reportPayload.replay_drivers.length > 0
+      ? reportPayload.replay_drivers
+      : game.replayDrivers || [];
+  const spreadPoints = reportPayload?.spread_points || [];
+
+  const coreLoopDescription =
+    reportPayload?.core_loop?.description || game.coreLoop || null;
+  const coreLoopRefs = reportPayload?.core_loop?.evidence_refs || [];
+  const metaLoopDescription =
+    reportPayload?.meta_loop?.description || game.metaLoop || null;
+  const metaLoopRefs = reportPayload?.meta_loop?.evidence_refs || [];
+
+  const hasGameplayData =
+    coreLoopDescription ||
+    metaLoopDescription ||
+    pleasurePoints.length > 0 ||
+    replayDrivers.length > 0 ||
+    spreadPoints.length > 0;
 
   return (
     <div>
@@ -174,6 +333,314 @@ export default async function GameDetailPage({
           </div>
         );
       })()}
+
+      {/* Report generation notice (only when no report and no positioning) */}
+      {!gameReport && !positioning && (
+        <div className="mb-6 py-3 px-4 bg-gray-50 border border-dashed border-gray-300 rounded-lg text-sm text-gray-500">
+          AI 战报生成中 · 数据积累后将自动生成定位、玩法拆解与 IAA 建议
+        </div>
+      )}
+
+      {/* Section A: 一句话定位 */}
+      {positioning ? (
+        <div className="border-l-4 border-blue-500 pl-4 py-3 mb-6 bg-blue-50 rounded-r-lg">
+          <p className="text-lg italic">&ldquo;{positioning}&rdquo;</p>
+          <p className="text-xs text-gray-500 mt-1">
+            AI 总结 · 置信度 {Math.round(reportConfidence * 100)}%
+          </p>
+        </div>
+      ) : (
+        <div className="mb-6 py-2 px-3 bg-gray-50 border border-gray-200 rounded text-xs text-gray-500">
+          暂无 AI 定位，数据积累中
+        </div>
+      )}
+
+      {/* Section B: 玩法机制拆解 */}
+      {hasGameplayData && (
+        <div className="bg-white rounded-lg shadow p-5 mb-6">
+          <h3 className="font-semibold mb-4">玩法机制拆解</h3>
+
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-6 mb-5">
+            {/* Core Loop */}
+            <div>
+              <h4 className="text-sm font-medium text-gray-700 mb-2">
+                核心循环 Core Loop
+              </h4>
+              {coreLoopDescription ? (
+                <>
+                  <p className="text-sm text-gray-600 leading-relaxed mb-2">
+                    {coreLoopDescription}
+                  </p>
+                  {coreLoopRefs.length > 0 && (
+                    <div className="flex flex-wrap gap-1">
+                      {coreLoopRefs.map((ref, i) => {
+                        const { type, id } = parseEvidenceRef(ref);
+                        return (
+                          <span
+                            key={i}
+                            className="text-xs bg-gray-200 px-1.5 py-0.5 rounded font-mono"
+                            title={`${type}:${id ?? ""}`}
+                          >
+                            {ref}
+                          </span>
+                        );
+                      })}
+                    </div>
+                  )}
+                </>
+              ) : (
+                <p className="text-xs text-gray-400">暂无数据</p>
+              )}
+            </div>
+
+            {/* Meta Loop */}
+            <div>
+              <h4 className="text-sm font-medium text-gray-700 mb-2">
+                Meta 循环 Meta Loop
+              </h4>
+              {metaLoopDescription ? (
+                <>
+                  <p className="text-sm text-gray-600 leading-relaxed mb-2">
+                    {metaLoopDescription}
+                  </p>
+                  {metaLoopRefs.length > 0 && (
+                    <div className="flex flex-wrap gap-1">
+                      {metaLoopRefs.map((ref, i) => {
+                        const { type, id } = parseEvidenceRef(ref);
+                        return (
+                          <span
+                            key={i}
+                            className="text-xs bg-gray-200 px-1.5 py-0.5 rounded font-mono"
+                            title={`${type}:${id ?? ""}`}
+                          >
+                            {ref}
+                          </span>
+                        );
+                      })}
+                    </div>
+                  )}
+                </>
+              ) : (
+                <p className="text-xs text-gray-400">暂无数据</p>
+              )}
+            </div>
+          </div>
+
+          {/* Chip groups */}
+          <div className="space-y-3 pt-4 border-t border-gray-100">
+            {pleasurePoints.length > 0 && (
+              <div>
+                <p className="text-xs font-medium text-gray-500 mb-1.5">
+                  爽点 Pleasure Points
+                </p>
+                <div className="flex flex-wrap gap-1.5">
+                  {pleasurePoints.map((p, i) => (
+                    <span
+                      key={i}
+                      className="text-xs bg-indigo-100 text-indigo-700 px-2.5 py-1 rounded-full"
+                    >
+                      {p}
+                    </span>
+                  ))}
+                </div>
+              </div>
+            )}
+            {replayDrivers.length > 0 && (
+              <div>
+                <p className="text-xs font-medium text-gray-500 mb-1.5">
+                  重玩驱动 Replay Drivers
+                </p>
+                <div className="flex flex-wrap gap-1.5">
+                  {replayDrivers.map((r, i) => (
+                    <span
+                      key={i}
+                      className="text-xs bg-purple-100 text-purple-700 px-2.5 py-1 rounded-full"
+                    >
+                      {r}
+                    </span>
+                  ))}
+                </div>
+              </div>
+            )}
+            {spreadPoints.length > 0 && (
+              <div>
+                <p className="text-xs font-medium text-gray-500 mb-1.5">
+                  传播卖点 Spread Points
+                </p>
+                <div className="flex flex-wrap gap-1.5">
+                  {spreadPoints.map((s, i) => (
+                    <span
+                      key={i}
+                      className="text-xs bg-pink-100 text-pink-700 px-2.5 py-1 rounded-full"
+                    >
+                      {s}
+                    </span>
+                  ))}
+                </div>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* Section C: 口碑主题分析 */}
+      {(positiveTopics.length > 0 || negativeTopics.length > 0) ? (
+        <div className="bg-white rounded-lg shadow p-5 mb-6">
+          <h3 className="font-semibold mb-4">口碑主题分析</h3>
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+            {/* Positive */}
+            <div>
+              <h4 className="text-sm font-medium text-green-700 mb-3 flex items-center gap-2">
+                <span className="inline-block w-2 h-2 rounded-full bg-green-500"></span>
+                好评主题
+              </h4>
+              {positiveTopics.length === 0 ? (
+                <p className="text-xs text-gray-400">暂无数据</p>
+              ) : (
+                <div className="space-y-3">
+                  {positiveTopics.map((t) => (
+                    <div
+                      key={`pos-${t.topic}-${t.computedAt.toISOString()}`}
+                      className="border-l-2 border-green-200 pl-3"
+                    >
+                      <div className="flex items-center gap-2 mb-0.5">
+                        <span className="text-sm font-medium text-gray-800">
+                          {t.topic}
+                        </span>
+                        <span className="text-xs bg-green-100 text-green-700 px-1.5 py-0.5 rounded">
+                          {t.reviewCount} 条
+                        </span>
+                      </div>
+                      <p className="text-xs text-gray-600 leading-relaxed">
+                        &ldquo;{t.snippet}&rdquo;
+                      </p>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+
+            {/* Negative */}
+            <div>
+              <h4 className="text-sm font-medium text-red-700 mb-3 flex items-center gap-2">
+                <span className="inline-block w-2 h-2 rounded-full bg-red-500"></span>
+                差评主题
+              </h4>
+              {negativeTopics.length === 0 ? (
+                <p className="text-xs text-gray-400">暂无数据</p>
+              ) : (
+                <div className="space-y-3">
+                  {negativeTopics.map((t) => (
+                    <div
+                      key={`neg-${t.topic}-${t.computedAt.toISOString()}`}
+                      className="border-l-2 border-red-200 pl-3"
+                    >
+                      <div className="flex items-center gap-2 mb-0.5">
+                        <span className="text-sm font-medium text-gray-800">
+                          {t.topic}
+                        </span>
+                        <span className="text-xs bg-red-100 text-red-700 px-1.5 py-0.5 rounded">
+                          {t.reviewCount} 条
+                        </span>
+                      </div>
+                      <p className="text-xs text-gray-600 leading-relaxed">
+                        &ldquo;{t.snippet}&rdquo;
+                      </p>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      ) : topicSummaries.length === 0 && !gameReport ? null : (
+        <div className="bg-white rounded-lg shadow p-5 mb-6">
+          <h3 className="font-semibold mb-2">口碑主题分析</h3>
+          <p className="text-sm text-gray-400">等待评论数据积累</p>
+        </div>
+      )}
+
+      {/* Section D: IAA 改造建议摘要 */}
+      <div className="bg-white rounded-lg shadow p-5 mb-6">
+        <div className="flex items-start justify-between mb-4">
+          <div>
+            <h3 className="font-semibold">IAA 改造建议摘要</h3>
+            <p className="text-xs text-gray-500 mt-0.5">
+              基于玩法拆解与评论分析的 IAA 适配洞察
+            </p>
+          </div>
+          <Link
+            href={`/iaa/${game.id}`}
+            className="text-sm text-blue-600 hover:text-blue-800 hover:underline shrink-0"
+          >
+            查看完整 IAA 分析 &rarr;
+          </Link>
+        </div>
+
+        {iaaAdvice || iaaGrade ? (
+          <div className="flex items-start gap-6">
+            {/* Grade badge */}
+            <div className="shrink-0 text-center">
+              <div
+                className={`w-20 h-20 rounded-xl flex items-center justify-center text-4xl font-bold ${
+                  IAA_GRADE_COLORS[iaaGrade || ""] || "bg-gray-300 text-gray-700"
+                }`}
+              >
+                {iaaGrade || "?"}
+              </div>
+              <p className="text-xs text-gray-500 mt-2">IAA 等级</p>
+              {iaaConfidence > 0 && (
+                <p className="text-xs text-gray-400 mt-0.5">
+                  置信度 {Math.round(iaaConfidence * 100)}%
+                </p>
+              )}
+            </div>
+
+            {/* Details */}
+            <div className="flex-1 space-y-3">
+              {iaaAdvice?.suitable_placements &&
+                iaaAdvice.suitable_placements.length > 0 && (
+                  <div>
+                    <p className="text-xs font-medium text-gray-500 mb-1">
+                      推荐广告位
+                    </p>
+                    <div className="flex flex-wrap gap-1.5">
+                      {iaaAdvice.suitable_placements.slice(0, 2).map((p, i) => (
+                        <span
+                          key={i}
+                          className="text-xs bg-green-50 text-green-700 border border-green-200 px-2 py-0.5 rounded"
+                        >
+                          {p}
+                        </span>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
+              {iaaAdvice?.risks && iaaAdvice.risks.length > 0 && (
+                <div>
+                  <p className="text-xs font-medium text-gray-500 mb-1">
+                    主要风险
+                  </p>
+                  <p className="text-xs text-red-700 bg-red-50 border border-red-100 px-2 py-1 rounded">
+                    {iaaAdvice.risks[0]}
+                  </p>
+                </div>
+              )}
+            </div>
+          </div>
+        ) : (
+          <div className="py-4 text-center">
+            <p className="text-sm text-gray-400 mb-3">尚未生成 IAA 报告</p>
+            <Link
+              href={`/iaa/${game.id}`}
+              className="inline-block text-sm px-4 py-2 bg-blue-500 text-white rounded hover:bg-blue-600"
+            >
+              触发生成 &rarr;
+            </Link>
+          </div>
+        )}
+      </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
         {/* Score Radar */}
