@@ -340,7 +340,7 @@ class ScoringEngine:
 
         rows = conn.execute(
             """
-            SELECT SUM(active_creatives), array_agg(DISTINCT unnest(markets))
+            SELECT SUM(active_creatives)
             FROM ad_intelligence
             WHERE game_id = %s AND signal_date >= %s
             """,
@@ -375,6 +375,7 @@ class ScoringEngine:
                     scores.append(score)
                 except Exception as e:
                     logger.error(f"Scoring failed for game {game_id}: {e}")
+                    conn.rollback()
 
             # Write scores to database
             for s in scores:
