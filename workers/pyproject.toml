@@ -16,9 +16,11 @@ dependencies = [
     "jieba>=0.42",
     "lxml>=5.0",
     "gplay-scraper>=1.0",
+    "google-play-scraper>=1.2",
     "curl-cffi>=0.7",
     "openai>=1.50",
     "tenacity>=8.2",
+    "langdetect>=1.0.9",
 ]
 
 [project.optional-dependencies]
