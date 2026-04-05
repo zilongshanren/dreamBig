@@ -57,6 +57,8 @@ services:
       dockerfile: Dockerfile
     restart: unless-stopped
     command: rq worker --url redis://redis:6379/0 --path /app
+    volumes:
+      - ./shared:/shared:ro
     environment:
       DATABASE_URL: postgresql://dreambig:dreambig@db:5432/dreambig
       REDIS_URL: redis://redis:6379/0
@@ -81,6 +83,8 @@ services:
       dockerfile: Dockerfile
     restart: unless-stopped
     command: python -m src.scheduler
+    volumes:
+      - ./shared:/shared:ro
     environment:
       DATABASE_URL: postgresql://dreambig:dreambig@db:5432/dreambig
       REDIS_URL: redis://redis:6379/0
