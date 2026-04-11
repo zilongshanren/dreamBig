@@ -196,13 +196,56 @@ class BilibiliReviewScraper(BaseReviewScraper):
         return all_reviews[:limit]
 
     # ------------------------------------------------------------------
-    # Search: let the browser sign WBI; we intercept the response.
+    # Search: hybrid — listen for any "search" XHR while the page loads,
+    # then also scrape the DOM. Whichever returns more data wins.
     # ------------------------------------------------------------------
     async def _search_videos(
         self, keyword: str, limit: int
     ) -> list[dict[str, Any]]:
         assert self._ctx is not None
         page = await self._ctx.new_page()
+        captured: list[dict[str, Any]] = []
+
+        # Collect every JSON response from *any* Bilibili search endpoint that
+        # fires during the page load. Bilibili currently uses
+        # /x/web-interface/wbi/search/all/v2 for the main search page XHR,
+        # but the exact path has changed twice in 2 years. Match broadly.
+        async def _capture(resp: Any) -> None:
+            try:
+                url = resp.url or ""
+                if "/search/" not in url:
+                    return
+                if resp.request.method != "GET":
+                    return
+                ctype = (resp.headers.get("content-type") or "").lower()
+                if "json" not in ctype:
+                    return
+                data = await resp.json()
+            except Exception:
+                return
+            if not isinstance(data, dict) or data.get("code") != 0:
+                return
+            # /search/type returns data.result (list).
+            # /search/all/v2 returns data.result (list of sections with a
+            #   section.result_type=="video" containing data).
+            payload = (data.get("data") or {})
+            result = payload.get("result")
+            if isinstance(result, list) and result:
+                if isinstance(result[0], dict) and "result_type" in result[0]:
+                    # all/v2 shape — pick the video section
+                    for section in result:
+                        if (
+                            section.get("result_type") == "video"
+                            and isinstance(section.get("data"), list)
+                        ):
+                            captured.extend(section["data"])
+                            return
+                else:
+                    # type shape — list of videos directly
+                    captured.extend(result)
+
+        page.on("response", _capture)
+
         try:
             search_url = (
                 "https://search.bilibili.com/video?keyword="
@@ -210,119 +253,148 @@ class BilibiliReviewScraper(BaseReviewScraper):
                 + "&order=click&duration=0&tids=0"
             )
 
-            # Navigate + wait for the browser's own /search/type XHR
             try:
-                async with page.expect_response(
-                    lambda r: "search/type" in r.url
-                    and r.request.method == "GET",
-                    timeout=20_000,
-                ) as resp_info:
-                    await page.goto(
-                        search_url,
-                        wait_until="domcontentloaded",
-                        timeout=25_000,
-                    )
-                resp = await resp_info.value
-                try:
-                    data = await resp.json()
-                except Exception:
-                    body = await resp.text()
-                    logger.warning(
-                        f"[bilibili_review] non-JSON search response ({resp.status}): "
-                        f"{body[:200]}"
-                    )
-                    return []
+                await page.goto(
+                    search_url,
+                    wait_until="domcontentloaded",
+                    timeout=30_000,
+                )
             except Exception as e:
                 logger.warning(
-                    f"[bilibili_review] search XHR wait failed for '{keyword}': {e}"
+                    f"[bilibili_review] search page goto failed for '{keyword}': {e}"
                 )
-                # Fallback: scrape BVIDs from the rendered DOM
-                return await self._search_videos_dom(page, limit)
 
-            if data.get("code") != 0:
-                logger.warning(
-                    f"[bilibili_review] search API code={data.get('code')} "
-                    f"message={data.get('message')!r}"
+            # Wait for video cards to actually appear in the DOM. Bilibili
+            # sometimes takes 5-15s to populate the grid after domcontentloaded.
+            try:
+                await page.wait_for_selector(
+                    'a[href*="/video/BV"]',
+                    timeout=20_000,
                 )
-                return await self._search_videos_dom(page, limit)
+            except Exception:
+                pass  # keep going; we'll try scraping whatever rendered
 
-            results = (data.get("data") or {}).get("result") or []
-            # Strip HTML em tags from titles
-            import re
-            for r in results:
-                if isinstance(r.get("title"), str):
-                    r["title"] = re.sub(r"<[^>]+>", "", r["title"])
-            logger.info(
-                f"[bilibili_review] search '{keyword}' → {len(results)} videos"
+            # Scroll a bit to trigger lazy-loaded cards
+            try:
+                await page.evaluate(
+                    "() => window.scrollBy(0, window.innerHeight * 2)"
+                )
+                await page.wait_for_timeout(1_500)
+            except Exception:
+                pass
+
+            # Try DOM scrape to supplement any captured XHR
+            dom_videos = await self._search_videos_dom_extract(page)
+
+            # Remove the response listener so subsequent pages don't stack up
+            try:
+                page.remove_listener("response", _capture)
+            except Exception:
+                pass
+
+            if captured:
+                import re
+                for v in captured:
+                    if isinstance(v.get("title"), str):
+                        v["title"] = re.sub(r"<[^>]+>", "", v["title"])
+                logger.info(
+                    f"[bilibili_review] search '{keyword}': XHR captured "
+                    f"{len(captured)} videos ({len(dom_videos)} also in DOM)"
+                )
+                return captured[:limit]
+
+            if dom_videos:
+                logger.info(
+                    f"[bilibili_review] search '{keyword}': DOM scraped "
+                    f"{len(dom_videos)} BVIDs, resolving aids..."
+                )
+                resolved = await self._resolve_bvids(dom_videos, limit)
+                logger.info(
+                    f"[bilibili_review] search '{keyword}': resolved "
+                    f"{len(resolved)} videos via DOM fallback"
+                )
+                return resolved
+
+            logger.warning(
+                f"[bilibili_review] search '{keyword}': 0 videos from XHR and DOM"
             )
-            return results[:limit]
+            return []
         finally:
             try:
                 await page.close()
             except Exception:
                 pass
 
-    async def _search_videos_dom(self, page: Any, limit: int) -> list[dict[str, Any]]:
-        """Fallback: extract BVIDs from the search page DOM when XHR intercept fails."""
-        try:
-            await page.wait_for_selector(
-                'a[href*="/video/BV"]', timeout=8_000
-            )
-        except Exception:
-            pass
+    async def _search_videos_dom_extract(self, page: Any) -> list[dict[str, Any]]:
+        """Pull every BVID + title from the rendered search DOM."""
         try:
             videos = await page.evaluate(
                 r"""() => {
                     const out = [];
                     const seen = new Set();
+
+                    // Primary: any anchor linking to /video/BVxxx
                     const anchors = document.querySelectorAll('a[href*="/video/BV"]');
                     for (const a of anchors) {
-                        const m = a.href.match(/\/video\/(BV[\w]+)/);
+                        const m = a.href.match(/\/video\/(BV[0-9A-Za-z]+)/);
                         if (!m) continue;
                         const bvid = m[1];
                         if (seen.has(bvid)) continue;
                         seen.add(bvid);
 
-                        // Find nearest meaningful text-containing ancestor for title
-                        let el = a;
-                        for (let i = 0; i < 6 && el; i++) {
-                            const txt = (el.innerText || el.textContent || '').trim();
-                            if (txt.length > 5) { break; }
-                            el = el.parentElement;
+                        // Pull title from the anchor's title attr, aria-label,
+                        // or nearest meaningful ancestor text.
+                        let title = (a.title || a.getAttribute('aria-label') || '').trim();
+                        if (!title) {
+                            let el = a;
+                            for (let i = 0; i < 6 && el; i++) {
+                                const txt = (el.innerText || el.textContent || '').trim();
+                                if (txt.length > 5) {
+                                    title = txt.split('\n')[0];
+                                    break;
+                                }
+                                el = el.parentElement;
+                            }
                         }
-                        const title = ((el?.innerText || a.innerText || '').trim().split('\n')[0] || '').slice(0, 200);
-                        out.push({bvid, title, aid: null});
-                        if (out.length >= 50) break;
+                        out.push({ bvid, title: (title || '').slice(0, 200) });
+                        if (out.length >= 60) break;
                     }
                     return out;
                 }"""
             )
+            return videos or []
         except Exception as e:
-            logger.debug(f"[bilibili_review] DOM fallback eval failed: {e}")
+            logger.debug(f"[bilibili_review] DOM extract eval failed: {e}")
             return []
 
-        if not videos:
-            return []
+    async def _resolve_bvids(
+        self, dom_videos: list[dict[str, Any]], limit: int
+    ) -> list[dict[str, Any]]:
+        """Resolve each BVID to numeric aid via the /view endpoint.
 
-        # Need aid for comment API — resolve each BVID via the view endpoint
-        resolved: list[dict[str, Any]] = []
-        for v in videos[: limit * 2]:  # resolve a few extras in case some fail
-            aid = await self._bvid_to_aid(v["bvid"])
-            if aid:
-                resolved.append(
-                    {
-                        "aid": aid,
-                        "bvid": v["bvid"],
-                        "title": v.get("title", ""),
-                        "play": 0,
-                    }
-                )
-            if len(resolved) >= limit:
-                break
-        logger.info(
-            f"[bilibili_review] DOM fallback resolved {len(resolved)} videos"
-        )
-        return resolved
+        Runs lookups concurrently (up to 5 at a time) so the DOM fallback
+        isn't painfully slow on cold cache.
+        """
+        import asyncio as _asyncio
+
+        sem = _asyncio.Semaphore(5)
+        candidates = dom_videos[: limit * 2]  # a few extras for failures
+
+        async def _one(v: dict[str, Any]) -> dict[str, Any] | None:
+            async with sem:
+                aid = await self._bvid_to_aid(v["bvid"])
+            if not aid:
+                return None
+            return {
+                "aid": aid,
+                "bvid": v["bvid"],
+                "title": v.get("title", ""),
+                "play": 0,
+            }
+
+        results = await _asyncio.gather(*[_one(v) for v in candidates])
+        resolved = [r for r in results if r is not None]
+        return resolved[:limit]
 
     async def _bvid_to_aid(self, bvid: str) -> int | None:
         """Look up numeric aid for a bvid via Bilibili's view endpoint."""
