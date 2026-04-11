@@ -218,19 +218,26 @@ def main():
         args=["crazygames", "trending", "GLOBAL"], id="cg_trending",
     )
 
-    # WeChat Mini Games — 3 charts from sj.qq.com (腾讯应用宝)
-    scheduler.add_job(
-        enqueue_scrape, "cron", hour=6, minute=40,
-        args=["wechat_mini", "hot", "CN"], id="wechat_mini_hot",
-    )
-    scheduler.add_job(
-        enqueue_scrape, "cron", hour=6, minute=42,
-        args=["wechat_mini", "top_grossing", "CN"], id="wechat_mini_grossing",
-    )
-    scheduler.add_job(
-        enqueue_scrape, "cron", hour=6, minute=44,
-        args=["wechat_mini", "new", "CN"], id="wechat_mini_new",
-    )
+    # WeChat Mini Games — 10 charts from sj.qq.com (腾讯应用宝)
+    # Ranking charts (06:40 - 06:46)
+    _wechat_mini_charts = [
+        (40, "hot", "wechat_mini_hot"),                 # 热门榜
+        (41, "top_grossing", "wechat_mini_grossing"),   # 畅销榜
+        (42, "new", "wechat_mini_new"),                 # 新游榜
+        (43, "featured", "wechat_mini_featured"),       # 小游戏精选榜
+        # Category listings (06:44 - 06:49)
+        (44, "tag_puzzle", "wechat_mini_tag_puzzle"),        # 休闲益智
+        (45, "tag_rpg", "wechat_mini_tag_rpg"),              # 角色扮演
+        (46, "tag_board", "wechat_mini_tag_board"),          # 棋牌
+        (47, "tag_strategy", "wechat_mini_tag_strategy"),    # 策略
+        (48, "tag_adventure", "wechat_mini_tag_adventure"),  # 动作冒险
+        (49, "tag_singleplayer", "wechat_mini_tag_single"),  # 单机
+    ]
+    for _minute, _chart, _id in _wechat_mini_charts:
+        scheduler.add_job(
+            enqueue_scrape, "cron", hour=6, minute=_minute,
+            args=["wechat_mini", _chart, "CN"], id=_id,
+        )
 
     # === Afternoon run: 14:00 HKT (2nd daily for major platforms) ===
     for region in ["US", "JP"]:

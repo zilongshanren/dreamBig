@@ -97,3 +97,51 @@ def test_rank_items_fallback_to_hot_card_on_unknown_chart() -> None:
     }
     items = _collect_rank_items(fake, "totally_unknown_chart")
     assert [i["app_id"] for i in items] == ["111", "222"]
+
+
+# ---------------------------------------------------------------------------
+# Fixtures for the extra chart types added later
+# ---------------------------------------------------------------------------
+def _load(name: str) -> str:
+    p = FIXTURE_PATH.parent / name
+    if not p.exists():
+        pytest.skip(f"fixture not present: {p}")
+    return p.read_text(encoding="utf-8")
+
+
+def test_parse_featured_list() -> None:
+    """小游戏精选榜 /wechat-game/choice-game-list — single component.
+
+    Fixture had 8 slots but one is an empty placeholder (ad carousel slot),
+    so we only assert that the majority of slots resolve to real games
+    with numeric Tencent app_ids — matching the scraper's own skip logic.
+    """
+    html = _load("sjqq_featured_list.html")
+    data = _extract_next_data(html)
+    items = _collect_rank_items(data, "featured")
+    assert len(items) >= 5
+    valid = [
+        x for x in items
+        if str(x.get("app_id", "")).isdigit()
+        and (x.get("app_name") or x.get("name"))
+    ]
+    assert len(valid) >= 5, f"expected >= 5 valid items, got {len(valid)}"
+
+
+def test_parse_tag_page_returns_category_games() -> None:
+    """Tag pages like /wechat-game-tag/xiuxianyizhi behave like single-component lists."""
+    html = _load("sjqq_tag_puzzle.html")
+    data = _extract_next_data(html)
+    items = _collect_rank_items(data, "tag_puzzle")
+    assert len(items) >= 10
+    # Make sure game records look complete
+    first = items[0]
+    assert first.get("app_id")
+    assert first.get("app_name") or first.get("name")
+
+
+def test_parse_tag_rpg_page() -> None:
+    html = _load("sjqq_tag_rpg.html")
+    data = _extract_next_data(html)
+    items = _collect_rank_items(data, "tag_rpg")
+    assert len(items) >= 5

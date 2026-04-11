@@ -25,11 +25,35 @@ from .base import BaseScraper, GameDetails, RankingEntry
 logger = logging.getLogger(__name__)
 
 
-# Chart type → Tencent ranking page path
+# Chart type → Tencent ranking page path.
+# The `tag_*` entries aren't strictly rankings — they're category listings
+# (ordered by editorial / downloads) — but we treat them as charts so the
+# usual ranking_snapshots pipeline captures them consistently.
 _CHART_PATHS: dict[str, str] = {
+    # Ranking charts
     "hot": "/wechat-game/popular-game-rank",
     "top_grossing": "/wechat-game/best-sell-game-rank",
     "new": "/wechat-game/new-game-rank",
+    "featured": "/wechat-game/choice-game-list",
+    # Category listings (tag-based). genre in _CHART_GENRE_MAP below.
+    "tag_puzzle": "/wechat-game-tag/xiuxianyizhi",       # 休闲益智
+    "tag_rpg": "/wechat-game-tag/rpg",                   # 角色扮演
+    "tag_board": "/wechat-game-tag/chess",               # 棋牌
+    "tag_strategy": "/wechat-game-tag/slg02",            # 策略
+    "tag_adventure": "/wechat-game-tag/avg",             # 动作冒险
+    "tag_singleplayer": "/wechat-game-tag/danji",        # 单机
+}
+
+# If a chart is a category listing, this maps its chart_type to the canonical
+# genre key from shared/genres.json. Used to backfill the `genre` column on
+# newly-created Game rows so dashboard genre filters work for mini-games.
+_CHART_GENRE_MAP: dict[str, str] = {
+    "tag_puzzle": "puzzle",
+    "tag_rpg": "rpg",
+    "tag_board": "board",
+    "tag_strategy": "strategy",
+    "tag_adventure": "adventure",
+    # singleplayer is not a genre, so no mapping — genre stays NULL.
 }
 
 # Fallback single-page source (5 items per ranking, but all three in one HTML)
@@ -103,7 +127,14 @@ class WeChatMiniScraper(BaseScraper):
             if developer:
                 developer = developer.strip() or None
             icon_url = (raw.get("icon") or raw.get("icon_url") or "") or None
-            cate = (raw.get("cate_name_new") or raw.get("cate_name") or "") or None
+            # Genre precedence: chart-derived (from tag URL) > item's own cate_name_new.
+            # Tag charts are the more reliable genre signal because they come
+            # from Tencent's curated category pages.
+            cate = (
+                _CHART_GENRE_MAP.get(chart_type)
+                or (raw.get("cate_name_new") or raw.get("cate_name") or "")
+                or None
+            )
             rating_raw = raw.get("average_rating")
             rating: float | None = None
             try:
