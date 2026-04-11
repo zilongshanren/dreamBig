@@ -116,7 +116,14 @@ def run_alerts():
 
 
 def run_social_signals():
-    """Collect social media signals for all tracked games."""
+    """Collect social media signals for high-potential games.
+
+    LIMITED TO top-50 games by yesterday's potential score (+ watchlisted
+    games). This caps TikHub API usage — unbounded iteration over all
+    games previously burned ~9000 calls/day against TikHub's paid plans.
+    Games outside this set are picked up by run_scrape_social_depth
+    separately (also capped), so coverage is still good.
+    """
     logger.info("Starting social signal collection")
     from src.scrapers.social_media import SocialMediaScraper
 
@@ -124,7 +131,19 @@ def run_social_signals():
 
     with psycopg.connect(DB_URL) as conn:
         games = conn.execute(
-            "SELECT id, COALESCE(name_zh, name_en) FROM games ORDER BY id"
+            """
+            SELECT g.id, COALESCE(g.name_zh, g.name_en) AS name
+            FROM games g
+            LEFT JOIN potential_scores ps ON ps.game_id = g.id
+              AND ps.scored_at = CURRENT_DATE - INTERVAL '1 day'
+            WHERE (ps.overall_score >= 50
+                   OR EXISTS (
+                        SELECT 1 FROM game_tags gt
+                        WHERE gt.game_id = g.id AND gt.tag = 'watchlist'
+                   ))
+            ORDER BY ps.overall_score DESC NULLS LAST
+            LIMIT 50
+            """
         ).fetchall()
 
         for game_id, game_name in games:
@@ -159,7 +178,12 @@ def run_social_signals():
 
 
 def run_ad_intel():
-    """Collect ad intelligence for all tracked games."""
+    """Collect ad intelligence for high-potential games.
+
+    Same top-50 LIMIT as run_social_signals — bounds AppGrowing API costs
+    (Facebook Ad Library is free but still rate-limited). Rest of the
+    catalog is skipped intentionally.
+    """
     logger.info("Starting ad intel collection")
     from src.scrapers.ad_intel import AdIntelScraper
 
@@ -167,7 +191,19 @@ def run_ad_intel():
 
     with psycopg.connect(DB_URL) as conn:
         games = conn.execute(
-            "SELECT id, COALESCE(name_en, name_zh) FROM games ORDER BY id"
+            """
+            SELECT g.id, COALESCE(g.name_en, g.name_zh) AS name
+            FROM games g
+            LEFT JOIN potential_scores ps ON ps.game_id = g.id
+              AND ps.scored_at = CURRENT_DATE - INTERVAL '1 day'
+            WHERE (ps.overall_score >= 50
+                   OR EXISTS (
+                        SELECT 1 FROM game_tags gt
+                        WHERE gt.game_id = g.id AND gt.tag = 'watchlist'
+                   ))
+            ORDER BY ps.overall_score DESC NULLS LAST
+            LIMIT 50
+            """
         ).fetchall()
 
         for game_id, game_name in games:
