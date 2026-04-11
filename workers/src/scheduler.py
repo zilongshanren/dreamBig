@@ -218,6 +218,12 @@ def main():
         args=["crazygames", "trending", "GLOBAL"], id="cg_trending",
     )
 
+    # WeChat Mini Games (aldzs.com via Playwright)
+    scheduler.add_job(
+        enqueue_scrape, "cron", hour=6, minute=40,
+        args=["wechat_mini", "hot", "CN"], id="wechat_mini_hot",
+    )
+
     # === Afternoon run: 14:00 HKT (2nd daily for major platforms) ===
     for region in ["US", "JP"]:
         scheduler.add_job(

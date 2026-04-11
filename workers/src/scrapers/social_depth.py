@@ -440,19 +440,34 @@ class SocialDepthScraper(BaseScraper):
     # Fan-out across all platforms
     # ------------------------------------------------------------------
     async def fetch_all(
-        self, keyword: str, limit_per_platform: int = 20
+        self,
+        keyword: str,
+        limit_per_platform: int = 20,
+        *,
+        name_zh: str | None = None,
+        name_en: str | None = None,
     ) -> list[SocialContent]:
-        """Fan-out fetch across all configured platforms for one keyword.
+        """Fan-out fetch across all configured platforms.
 
-        One platform failing does not block the others — each task's
-        exception is caught and logged.
+        Douyin and Bilibili search in Chinese (prefer name_zh, fall back to
+        name_en). YouTube and TikTok search in English (prefer name_en,
+        fall back to name_zh). If only `keyword` is supplied we use it
+        everywhere — older callers keep working.
+
+        One platform failing does not block the others.
         """
-        tasks = [
-            self.fetch_douyin(keyword, limit_per_platform),
-            self.fetch_tiktok(keyword, limit_per_platform),
-            self.fetch_youtube(keyword, limit_per_platform),
-            self.fetch_bilibili(keyword, limit_per_platform),
-        ]
+        # Resolve per-platform search terms.
+        zh_keyword = (name_zh or name_en or keyword or "").strip()
+        en_keyword = (name_en or name_zh or keyword or "").strip()
+
+        tasks = []
+        if zh_keyword:
+            tasks.append(self.fetch_douyin(zh_keyword, limit_per_platform))
+            tasks.append(self.fetch_bilibili(zh_keyword, limit_per_platform))
+        if en_keyword:
+            tasks.append(self.fetch_tiktok(en_keyword, limit_per_platform))
+            tasks.append(self.fetch_youtube(en_keyword, limit_per_platform))
+
         all_results: list[SocialContent] = []
         for coro in asyncio.as_completed(tasks):
             try:
@@ -460,7 +475,7 @@ class SocialDepthScraper(BaseScraper):
             except Exception as e:
                 logger.warning(f"[social_depth] one platform failed: {e}")
         logger.info(
-            f"[social_depth] '{keyword}' aggregate: {len(all_results)} items"
+            f"[social_depth] zh='{zh_keyword}' en='{en_keyword}' → {len(all_results)} items"
         )
         return all_results
 

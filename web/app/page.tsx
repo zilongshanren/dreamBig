@@ -78,6 +78,11 @@ function daysAgo(n: number): Date {
   return d;
 }
 
+/** Return the start-of-window date given the current filter (exclusive of today is OK). */
+function windowStartDate(w: Filters["window"]): Date {
+  return daysAgo(windowToDays(w));
+}
+
 async function getStats(workspaceId: string) {
   try {
     const [gameCount, platformCount, alertCount, topScores] =
@@ -103,46 +108,70 @@ async function getStats(workspaceId: string) {
   }
 }
 
-// 1. 榜单异动 Top 10 — top ranking climbers today
+// 1. 榜单异动 Top 10 — largest rank improvement within the selected window
 async function getRankingMovement(filters: Filters) {
   try {
-    const today = todayDate();
+    const windowStart = windowStartDate(filters.window);
     const rows = await prisma.rankingSnapshot.findMany({
       where: {
-        snapshotDate: today,
+        snapshotDate: { gte: windowStart },
         rankChange: { gt: 0 },
         ...(filters.platform !== "all"
           ? { platformListing: { platform: filters.platform } }
           : {}),
       },
       orderBy: { rankChange: "desc" },
-      take: 10,
+      take: 50, // take more so genre filter has room
       include: {
         platformListing: {
           include: { game: true },
         },
       },
     });
-    // Optionally filter by genre in-memory
-    const filtered =
-      filters.genre === "all"
-        ? rows
-        : rows.filter((r) => r.platformListing.game.genre === filters.genre);
-    return filtered;
+    // Deduplicate per game (keep the biggest rankChange in window)
+    const bestByGame = new Map<number, (typeof rows)[number]>();
+    for (const r of rows) {
+      const prev = bestByGame.get(r.platformListing.gameId);
+      if (!prev || (r.rankChange ?? 0) > (prev.rankChange ?? 0)) {
+        bestByGame.set(r.platformListing.gameId, r);
+      }
+    }
+    let deduped = Array.from(bestByGame.values());
+
+    if (filters.genre !== "all") {
+      deduped = deduped.filter(
+        (r) => r.platformListing.game.genre === filters.genre,
+      );
+    }
+    deduped.sort((a, b) => (b.rankChange ?? 0) - (a.rankChange ?? 0));
+    return deduped.slice(0, 10);
   } catch {
     return [];
   }
 }
 
-// 2. 口碑恶化榜 Top 10 — biggest ratingQuality drop over last 7d
+// 2. 口碑恶化榜 Top 10 — largest ratingQuality drop within the selected window
 async function getReputationDecline(filters: Filters) {
   try {
     const today = todayDate();
-    const past = daysAgo(7);
+    const past = windowStartDate(filters.window);
+
+    // Build platform filter (applied via game's platform_listings join)
+    const platformGameFilter =
+      filters.platform !== "all"
+        ? {
+            game: {
+              platformListings: { some: { platform: filters.platform } },
+              ...(filters.genre !== "all" ? { genre: filters.genre } : {}),
+            },
+          }
+        : filters.genre !== "all"
+          ? { game: { genre: filters.genre } }
+          : {};
 
     const [todays, pasts] = await Promise.all([
       prisma.potentialScore.findMany({
-        where: { scoredAt: today },
+        where: { scoredAt: today, ...platformGameFilter },
         select: { gameId: true, ratingQuality: true, game: true },
       }),
       prisma.potentialScore.findMany({
@@ -174,24 +203,27 @@ async function getReputationDecline(filters: Filters) {
       });
     }
 
-    const filtered =
-      filters.genre === "all"
-        ? deltas
-        : deltas.filter((d) => d.game.genre === filters.genre);
-
-    filtered.sort((a, b) => b.drop - a.drop);
-    return filtered.slice(0, 10);
+    deltas.sort((a, b) => b.drop - a.drop);
+    return deltas.slice(0, 10);
   } catch {
     return [];
   }
 }
 
-// 3. 社交爆发榜 Top 10 — highest view_count growth in last 3 days
+// 3. 社交爆发榜 Top 10 — highest view_count within the selected window
 async function getSocialBurst(filters: Filters) {
   try {
-    const since = daysAgo(3);
+    const since = windowStartDate(filters.window);
+    // Platform filter applies to game's listings (not to social platform)
+    const gameWhere =
+      filters.platform !== "all"
+        ? { platformListings: { some: { platform: filters.platform } } }
+        : {};
     const rows = await prisma.socialSignal.findMany({
-      where: { signalDate: { gte: since } },
+      where: {
+        signalDate: { gte: since },
+        ...(filters.platform !== "all" ? { game: gameWhere } : {}),
+      },
       include: { game: true },
     });
     if (rows.length === 0) return [];
@@ -245,23 +277,32 @@ async function getSocialBurst(filters: Filters) {
   }
 }
 
-// 4. IAA 适配榜 Top 10 — high IAA + high overall score today
+// 4. IAA 适配榜 Top 10 — high IAA + high overall score within the selected window
 async function getIAACandidates(filters: Filters) {
   try {
+    const since = windowStartDate(filters.window);
     const rows = await prisma.potentialScore.findMany({
       where: {
-        scoredAt: todayDate(),
+        scoredAt: { gte: since },
         overallScore: { gte: 60 },
         game: {
           iaaSuitability: { gte: 70 },
           ...(filters.genre !== "all" ? { genre: filters.genre } : {}),
+          ...(filters.platform !== "all"
+            ? { platformListings: { some: { platform: filters.platform } } }
+            : {}),
         },
       },
-      orderBy: { overallScore: "desc" },
-      take: 10,
+      orderBy: [{ scoredAt: "desc" }, { overallScore: "desc" }],
+      take: 50,
       include: { game: true },
     });
-    return rows;
+    // Dedup per game, keep most recent scored row
+    const bestByGame = new Map<number, (typeof rows)[number]>();
+    for (const r of rows) {
+      if (!bestByGame.has(r.gameId)) bestByGame.set(r.gameId, r);
+    }
+    return Array.from(bestByGame.values()).slice(0, 10);
   } catch {
     return [];
   }

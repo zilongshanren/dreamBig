@@ -607,6 +607,9 @@ def run_scrape_social_depth(limit_per_game: int = 20):
     Each game costs 2 TikHub calls (Douyin + TikTok) plus free Bilibili/YouTube
     quota, so with the default 8 games × 30 days = 480 TikHub calls/month —
     fits inside a 600/month TikHub plan with 20% headroom.
+
+    Uses name_zh for Chinese platforms (Douyin / Bilibili) and name_en for
+    English platforms (YouTube / TikTok) to get high-quality search hits.
     """
     from src.scrapers.social_depth import SocialDepthScraper
     import json as _json
@@ -619,7 +622,7 @@ def run_scrape_social_depth(limit_per_game: int = 20):
         # Only for high-potential games + watchlisted
         games = conn.execute(
             """
-            SELECT g.id, COALESCE(g.name_zh, g.name_en) AS name
+            SELECT g.id, g.name_zh, g.name_en
             FROM games g
             LEFT JOIN potential_scores ps ON ps.game_id = g.id AND ps.scored_at = CURRENT_DATE
             WHERE ps.overall_score >= 60
@@ -631,11 +634,19 @@ def run_scrape_social_depth(limit_per_game: int = 20):
         ).fetchall()
 
         total = 0
-        for game_id, name in games:
-            if not name:
+        for game_id, name_zh, name_en in games:
+            primary_name = name_zh or name_en
+            if not primary_name:
                 continue
             try:
-                contents = asyncio.run(scraper.fetch_all(name, limit_per_platform=limit_per_game))
+                contents = asyncio.run(
+                    scraper.fetch_all(
+                        primary_name,
+                        limit_per_platform=limit_per_game,
+                        name_zh=name_zh,
+                        name_en=name_en,
+                    )
+                )
                 for c in contents:
                     conn.execute(
                         """
@@ -657,9 +668,9 @@ def run_scrape_social_depth(limit_per_game: int = 20):
                     )
                 conn.commit()
                 total += len(contents)
-                logger.info(f"Social depth for '{name}': {len(contents)} items")
+                logger.info(f"Social depth for '{primary_name}': {len(contents)} items")
             except Exception as e:
-                logger.warning(f"Social depth failed for '{name}': {e}")
+                logger.warning(f"Social depth failed for '{primary_name}': {e}")
 
     try:
         asyncio.run(scraper.close())
