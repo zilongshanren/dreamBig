@@ -169,6 +169,11 @@ def enqueue_wechat_intelligence():
     logger.info("Enqueued wechat intelligence briefing")
 
 
+def enqueue_gameplay_intel():
+    queue.enqueue("src.worker.run_gameplay_intel", 50, job_timeout="30m")
+    logger.info("Enqueued gameplay intel batch (limit=50)")
+
+
 def main():
     scheduler = BlockingScheduler()
 
@@ -339,6 +344,14 @@ def main():
     scheduler.add_job(
         enqueue_wechat_intelligence, "cron", hour=13, minute=0,
         id="wechat_intelligence",
+    )
+
+    # === 08:15 HKT: Gameplay intel fact sheets (Sonnet, per-game, 50 games).
+    #                Runs after fetch_details (06:45) so editor_intro /
+    #                screenshots are fresh, and before alerts (08:30). ===
+    scheduler.add_job(
+        enqueue_gameplay_intel, "cron", hour=8, minute=15,
+        id="gameplay_intel",
     )
 
     # === Tuesday 02:00: Asset analysis (weekly, low-traffic window, cheap but slow) ===

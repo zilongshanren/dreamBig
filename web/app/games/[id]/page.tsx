@@ -318,21 +318,137 @@ export default async function GameDetailPage({
         </span>
       </div>
 
+      {/* Gameplay intel fact sheet (metadata.gameplay_intel, LLM-synthesized) */}
+      {(() => {
+        const meta = game.metadata as any;
+        const intel = meta?.gameplay_intel as
+          | {
+              gameplay_intro?: string;
+              features?: string[];
+              art_style_primary?: string | null;
+              art_style_secondary?: string[];
+              art_style_evidence?: string[];
+              screenshot_refs?: number[];
+              confidence?: number;
+              source_count?: number;
+              model_used?: string;
+              generated_at?: string;
+            }
+          | undefined;
+        if (!intel || !intel.gameplay_intro) return null;
+        const conf = Math.round((intel.confidence ?? 0) * 100);
+        const features = intel.features || [];
+        const primary = intel.art_style_primary || null;
+        const secondary = intel.art_style_secondary || [];
+        const evidence = intel.art_style_evidence || [];
+        return (
+          <section className="mb-6 bg-gradient-to-br from-purple-50 to-pink-50 rounded-lg border border-purple-100 p-5 space-y-4">
+            <div className="flex items-center justify-between flex-wrap gap-2">
+              <h3 className="font-semibold text-purple-900 flex items-center gap-2">
+                <span>🎮</span>玩法速览
+                <span className="text-xs font-normal text-gray-500">
+                  · 置信度 {conf}%
+                </span>
+                {intel.source_count !== undefined && (
+                  <span className="text-xs font-normal text-gray-400">
+                    · {intel.source_count} 个数据源
+                  </span>
+                )}
+              </h3>
+              {intel.model_used && (
+                <span className="text-[10px] text-gray-400 font-mono">
+                  {intel.model_used}
+                </span>
+              )}
+            </div>
+            <p className="text-sm text-gray-700 leading-relaxed">
+              {intel.gameplay_intro}
+            </p>
+            {features.length > 0 && (
+              <div>
+                <p className="text-[11px] font-semibold text-purple-700 uppercase tracking-wide mb-1.5">
+                  玩法特色
+                </p>
+                <div className="flex gap-1.5 flex-wrap">
+                  {features.map((f, i) => (
+                    <span
+                      key={i}
+                      className="text-xs bg-white text-purple-700 px-2 py-1 rounded-full border border-purple-200"
+                    >
+                      {f}
+                    </span>
+                  ))}
+                </div>
+              </div>
+            )}
+            {(primary || secondary.length > 0) && (
+              <div>
+                <p className="text-[11px] font-semibold text-purple-700 uppercase tracking-wide mb-1.5">
+                  美术风格
+                </p>
+                <div className="flex gap-1.5 flex-wrap items-center">
+                  {primary && (
+                    <span className="text-xs bg-purple-600 text-white px-2.5 py-1 rounded-full font-medium">
+                      {primary}
+                    </span>
+                  )}
+                  {secondary.map((s, i) => (
+                    <span
+                      key={i}
+                      className="text-xs bg-white text-purple-600 px-2 py-1 rounded-full border border-purple-200"
+                    >
+                      {s}
+                    </span>
+                  ))}
+                </div>
+                {evidence.length > 0 && (
+                  <ul className="mt-2 space-y-0.5">
+                    {evidence.map((e, i) => (
+                      <li
+                        key={i}
+                        className="text-[11px] text-gray-500 italic pl-3 border-l border-purple-200"
+                      >
+                        &ldquo;{e}&rdquo;
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </div>
+            )}
+          </section>
+        );
+      })()}
+
       {/* Screenshots */}
       {(() => {
         const meta = game.metadata as any;
         const screenshots = meta?.screenshots as string[] | undefined;
         if (!screenshots?.length) return null;
+        const intel = meta?.gameplay_intel as
+          | { screenshot_refs?: number[] }
+          | undefined;
+        const recommended = new Set<number>(intel?.screenshot_refs || []);
         return (
           <div className="mb-6">
-            <h3 className="font-semibold mb-3">游戏截图</h3>
+            <h3 className="font-semibold mb-3">
+              游戏截图
+              {recommended.size > 0 && (
+                <span className="ml-2 text-xs font-normal text-purple-600">
+                  · 紫色标记 = AI 推荐的玩法画面
+                </span>
+              )}
+            </h3>
             <div className="flex gap-3 overflow-x-auto pb-2">
               {screenshots.map((url, i) => (
                 <img
                   key={i}
                   src={url}
                   alt={`Screenshot ${i + 1}`}
-                  className="h-48 rounded-lg shadow object-cover shrink-0"
+                  className={`h-48 rounded-lg object-cover shrink-0 ${
+                    recommended.has(i)
+                      ? "ring-2 ring-purple-500 shadow-md"
+                      : "shadow"
+                  }`}
                 />
               ))}
             </div>

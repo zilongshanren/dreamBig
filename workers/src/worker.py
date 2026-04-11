@@ -725,6 +725,25 @@ def run_wechat_intelligence(target_date: str | None = None) -> dict | None:
     return _run(DB_URL, target_date=parsed)
 
 
+def run_gameplay_intel(
+    limit: int = 50, target_date: str | None = None
+) -> dict | None:
+    """Synthesize structured gameplay fact sheets for top WeChat games.
+
+    Iterates the top-``limit`` cross-chart WeChat games today, reads
+    the editor_intro / screenshots / review topics / hook phrases that
+    earlier jobs already wrote, and asks Sonnet to output gameplay_intro
+    / features / art_style. Result is persisted to
+    games.metadata.gameplay_intel — no new table.
+    """
+    from datetime import date as _date
+    from src.processors.gameplay_intel import (
+        run_gameplay_intel as _run,
+    )
+    parsed = _date.fromisoformat(target_date) if target_date else None
+    return _run(DB_URL, limit=limit, target_date=parsed)
+
+
 def run_api_key_check() -> dict:
     """End-to-end probe for YouTube / TikHub / Bilibili review paths.
 
@@ -1122,6 +1141,10 @@ if __name__ == "__main__":
     elif len(sys.argv) >= 2 and sys.argv[1] == "wechat_intelligence":
         target = sys.argv[2] if len(sys.argv) > 2 else None
         print(run_wechat_intelligence(target_date=target))
+    elif len(sys.argv) >= 2 and sys.argv[1] == "gameplay_intel":
+        _limit = int(sys.argv[2]) if len(sys.argv) > 2 else 50
+        _target = sys.argv[3] if len(sys.argv) > 3 else None
+        print(run_gameplay_intel(limit=_limit, target_date=_target))
     elif len(sys.argv) >= 3:
         platform = sys.argv[1]
         chart_type = sys.argv[2]
@@ -1149,4 +1172,5 @@ if __name__ == "__main__":
         print("       python -m src.worker translate_names [limit]")
         print("       python -m src.worker api_key_check")
         print("       python -m src.worker wechat_intelligence [yyyy-mm-dd]")
+        print("       python -m src.worker gameplay_intel [limit] [yyyy-mm-dd]")
         print("Example: python -m src.worker app_store top_free US")
