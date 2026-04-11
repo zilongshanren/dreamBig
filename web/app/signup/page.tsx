@@ -1,14 +1,12 @@
 "use client";
 
 import Link from "next/link";
-import { useRouter } from "next/navigation";
 import { useState } from "react";
 import { signIn } from "next-auth/react";
 
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
 export default function SignupPage() {
-  const router = useRouter();
   const [email, setEmail] = useState("");
   const [name, setName] = useState("");
   const [password, setPassword] = useState("");
@@ -65,11 +63,11 @@ export default function SignupPage() {
       });
 
       if (signInRes?.ok) {
-        router.push("/");
-        router.refresh();
+        // Full page navigation so middleware sees the fresh session cookie.
+        window.location.href = "/";
       } else {
         // If auto sign-in fails, go to login page
-        router.push("/login");
+        window.location.href = "/login";
       }
     } catch {
       setError("注册失败，请重试");

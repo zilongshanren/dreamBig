@@ -1,12 +1,11 @@
 "use client";
 
 import Link from "next/link";
-import { useRouter, useSearchParams } from "next/navigation";
+import { useSearchParams } from "next/navigation";
 import { useState, Suspense } from "react";
 import { signIn } from "next-auth/react";
 
 function LoginForm() {
-  const router = useRouter();
   const searchParams = useSearchParams();
   const callbackUrl = searchParams.get("callbackUrl") || "/";
 
@@ -34,8 +33,10 @@ function LoginForm() {
       }
 
       if (res?.ok) {
-        router.push(callbackUrl);
-        router.refresh();
+        // Full page navigation so middleware sees the fresh session cookie.
+        // router.push() is client-side and races with cookie write, causing
+        // middleware to bounce the user back to /login on some browsers.
+        window.location.href = callbackUrl;
         return;
       }
 
