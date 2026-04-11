@@ -46,6 +46,9 @@ services:
       NEXT_PUBLIC_APP_URL: ${NEXT_PUBLIC_APP_URL:-http://localhost:3000}
       NEXTAUTH_SECRET: ${NEXTAUTH_SECRET:-}
       NEXTAUTH_URL: ${NEXTAUTH_URL:-http://localhost:3000}
+      # Auth.js v5 — trust the Host header forwarded by Caddy reverse proxy.
+      # Without this, /api/auth/* returns UntrustedHost in production mode.
+      AUTH_TRUST_HOST: ${AUTH_TRUST_HOST:-true}
       FEISHU_APP_ID: ${FEISHU_APP_ID:-}
       FEISHU_APP_SECRET: ${FEISHU_APP_SECRET:-}
       FEISHU_VERIFICATION_TOKEN: ${FEISHU_VERIFICATION_TOKEN:-}
