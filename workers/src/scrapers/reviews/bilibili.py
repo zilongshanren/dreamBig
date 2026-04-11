@@ -173,7 +173,45 @@ class BilibiliReviewScraper(BaseReviewScraper):
             pass
 
     # ------------------------------------------------------------------
-    # Public entry point
+    # Public entry point #2: aggregate signal (for run_social_signals)
+    # ------------------------------------------------------------------
+    async def get_game_signal(self, game_name: str) -> dict:
+        """Return a per-game Bilibili aggregate signal.
+
+        Shape: ``{video_count, view_count, like_count}``. Designed to be a
+        drop-in for the old SocialMediaScraper.search_bilibili() path,
+        which was getting 412'd from the HK datacenter IP. This method
+        reuses the Playwright-driven search that we already know works.
+
+        Empty dict on failure — caller treats it as "no data" and moves on.
+        """
+        name = (game_name or "").strip()
+        if not name:
+            return {"video_count": 0, "view_count": 0, "like_count": 0}
+
+        if not await self._ensure_playwright():
+            return {"video_count": 0, "view_count": 0, "like_count": 0}
+
+        videos = await self._search_videos(name, limit=20)
+        if not videos:
+            return {"video_count": 0, "view_count": 0, "like_count": 0}
+
+        total_views = 0
+        total_likes = 0
+        for v in videos:
+            try:
+                total_views += int(v.get("play") or 0)
+                total_likes += int(v.get("like") or 0)
+            except (TypeError, ValueError):
+                continue
+        return {
+            "video_count": len(videos),
+            "view_count": total_views,
+            "like_count": total_likes,
+        }
+
+    # ------------------------------------------------------------------
+    # Public entry point #1: reviews
     # ------------------------------------------------------------------
     async def scrape_reviews(
         self,

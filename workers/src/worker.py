@@ -116,22 +116,29 @@ def run_alerts():
 
 
 def run_social_signals():
-    """Collect social media signals for high-potential games.
+    """Collect Bilibili aggregate signals for high-potential games.
 
-    LIMITED to top-50 games by yesterday's potential score (+ watchlisted
-    games) + every wechat_mini listing so the /  wechat dashboard has
-    data on day one. Free Bilibili-only path (TikHub gated off by default).
+    Uses the Playwright-driven BilibiliReviewScraper (same browser session
+    as the review scraper) because the old plain-httpx Bilibili search was
+    getting 412 Precondition Failed on ~90% of Chinese game names from
+    the HK datacenter IP. The Playwright path sails through since the
+    real browser signs WBI internally.
 
-    All async calls share a single event loop so the scraper's
-    httpx.AsyncClient stays bound to the loop that created it — the
-    previous per-game `asyncio.run()` approach broke with "Event loop is
-    closed" after the first iteration.
+    Games selected: top-60 by yesterday's potential score + every
+    watchlisted game + every wechat_mini listing. The whole loop runs in
+    one event loop so Playwright's browser stays alive across games.
     """
     logger.info("Starting social signal collection")
-    from src.scrapers.social_media import SocialMediaScraper
+    from src.scrapers.reviews.bilibili import BilibiliReviewScraper
 
     async def _run() -> None:
-        scraper = SocialMediaScraper()
+        scraper = BilibiliReviewScraper()
+        ok = await scraper._ensure_playwright()
+        if not ok:
+            logger.warning(
+                "Social signals: Playwright init failed, aborting"
+            )
+            return
         try:
             with psycopg.connect(DB_URL) as conn:
                 games = conn.execute(
@@ -154,29 +161,47 @@ def run_social_signals():
                     """
                 ).fetchall()
 
+                total = 0
                 for game_id, game_name in games:
                     if not game_name:
                         continue
                     try:
-                        signals = await scraper.collect_signals(game_name)
-                        for sig in signals:
-                            conn.execute(
-                                """
-                                INSERT INTO social_signals
-                                (game_id, platform, video_count, view_count, like_count,
-                                 hashtag_volume, signal_date)
-                                VALUES (%s, %s, %s, %s, %s, %s, CURRENT_DATE)
-                                ON CONFLICT (game_id, platform, signal_date) DO UPDATE SET
-                                    video_count = EXCLUDED.video_count,
-                                    view_count = EXCLUDED.view_count,
-                                    like_count = EXCLUDED.like_count
-                                """,
-                                (game_id, sig.platform, sig.video_count,
-                                 sig.view_count, sig.like_count, sig.hashtag_volume),
-                            )
+                        sig = await scraper.get_game_signal(game_name)
+                        conn.execute(
+                            """
+                            INSERT INTO social_signals
+                            (game_id, platform, video_count, view_count, like_count,
+                             hashtag_volume, signal_date)
+                            VALUES (%s, %s, %s, %s, %s, %s, CURRENT_DATE)
+                            ON CONFLICT (game_id, platform, signal_date) DO UPDATE SET
+                                video_count = EXCLUDED.video_count,
+                                view_count = EXCLUDED.view_count,
+                                like_count = EXCLUDED.like_count
+                            """,
+                            (
+                                game_id,
+                                "bilibili",
+                                sig["video_count"],
+                                sig["view_count"],
+                                sig["like_count"],
+                                0,
+                            ),
+                        )
                         conn.commit()
+                        total += 1
+                        if sig["video_count"] > 0:
+                            logger.info(
+                                f"[social_signals] '{game_name}': "
+                                f"{sig['video_count']} videos, "
+                                f"{sig['view_count']} views"
+                            )
                     except Exception as e:
-                        logger.warning(f"Social signal failed for '{game_name}': {e}")
+                        logger.warning(
+                            f"Social signal failed for '{game_name}': {e}"
+                        )
+                logger.info(
+                    f"Social signal collection complete: {total} games processed"
+                )
         finally:
             try:
                 await scraper.close()
@@ -184,7 +209,6 @@ def run_social_signals():
                 pass
 
     asyncio.run(_run())
-    logger.info("Social signal collection complete")
 
 
 def run_ad_intel():
