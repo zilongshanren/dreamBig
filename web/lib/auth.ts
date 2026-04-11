@@ -1,8 +1,12 @@
 import NextAuth, { type DefaultSession } from "next-auth";
+import type { JWT as _JWT } from "next-auth/jwt"; // imported so the module augmentation below resolves
 import Credentials from "next-auth/providers/credentials";
 import { PrismaAdapter } from "@auth/prisma-adapter";
 import bcrypt from "bcryptjs";
 import { prisma } from "@/lib/prisma";
+
+// Silence "unused import" — _JWT only exists to make the module visible to augmentation.
+export type __NextAuthJWT = _JWT;
 
 declare module "next-auth" {
   interface Session {

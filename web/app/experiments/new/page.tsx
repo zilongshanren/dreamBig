@@ -2,7 +2,7 @@
 
 import { useRouter, useSearchParams } from "next/navigation";
 import Link from "next/link";
-import { useEffect, useState } from "react";
+import { Suspense, useEffect, useState } from "react";
 
 // Inlined from /shared/experiment_templates.json — keep in sync when that
 // file is updated (Next.js include scope doesn't reach outside web/).
@@ -163,6 +163,16 @@ const PRIORITY_OPTIONS = [
 ];
 
 export default function NewExperimentPage() {
+  // useSearchParams() needs a Suspense boundary for static rendering —
+  // Next.js App Router requires it at the component that reads the URL.
+  return (
+    <Suspense fallback={<div className="text-sm text-gray-400">加载中…</div>}>
+      <NewExperimentForm />
+    </Suspense>
+  );
+}
+
+function NewExperimentForm() {
   const router = useRouter();
   const searchParams = useSearchParams();
   const prefillGameId = searchParams.get("gameId") || "";
