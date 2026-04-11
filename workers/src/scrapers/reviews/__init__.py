@@ -7,6 +7,7 @@ datetime timestamps).
 
 from .app_store import AppStoreReviewScraper
 from .base import BaseReviewScraper, ReviewEntry
+from .bilibili import BilibiliReviewScraper
 from .google_play import GooglePlayReviewScraper
 from .h5_4399 import H5_4399ReviewScraper
 from .steam import SteamReviewScraper
@@ -20,4 +21,5 @@ __all__ = [
     "AppStoreReviewScraper",
     "TapTapReviewScraper",
     "H5_4399ReviewScraper",
+    "BilibiliReviewScraper",
 ]

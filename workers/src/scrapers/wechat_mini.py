@@ -143,6 +143,10 @@ class WeChatMiniScraper(BaseScraper):
             except (TypeError, ValueError):
                 rating = None
 
+            pkg_name = (raw.get("pkg_name") or "").strip() or None
+            # The real Tencent detail page uses /appdetail/{pkg_name} (wx-prefixed),
+            # not /appdetail/{app_id}. /app/{app_id} is also valid but less info.
+            detail_url = f"{_BASE}/appdetail/{pkg_name}" if pkg_name else None
             results.append(
                 RankingEntry(
                     platform_id=app_id,
@@ -154,11 +158,13 @@ class WeChatMiniScraper(BaseScraper):
                     developer=developer,
                     genre=cate,
                     icon_url=icon_url,
-                    url=f"{_BASE}/appdetail/{app_id}",
+                    url=detail_url,
                     metadata={
                         "source": "sj.qq.com",
                         "editor_intro": (raw.get("editor_intro") or "")[:300] or None,
-                        "pkg_name": raw.get("pkg_name"),
+                        "pkg_name": pkg_name,
+                        "username": raw.get("username") or None,
+                        "tags": raw.get("tags") or None,
                     },
                 )
             )
@@ -167,12 +173,49 @@ class WeChatMiniScraper(BaseScraper):
         return results
 
     async def scrape_game_details(self, platform_id: str) -> GameDetails | None:
-        """Fetch the detail page for a single mini-game by its Tencent app_id."""
-        url = f"{_BASE}/appdetail/{platform_id}"
+        """Fetch the detail page for a mini-game.
+
+        `platform_id` is the numeric Tencent app_id (stored in PlatformListing).
+        To reach the real detail page we need the wx-prefixed ``pkg_name``,
+        so we first look it up from a previous ranking_snapshots row's
+        platform_listings.metadata. If that's missing we fall back to
+        /app/{app_id} which exists but has less data.
+        """
+        import psycopg as _pg
+        import os as _os
+
+        pkg_name: str | None = None
+        try:
+            with _pg.connect(_os.environ.get("DATABASE_URL", "")) as c:
+                row = c.execute(
+                    """
+                    SELECT metadata->>'pkg_name'
+                    FROM platform_listings
+                    WHERE platform = 'wechat_mini' AND platform_id = %s
+                    """,
+                    (platform_id,),
+                ).fetchone()
+                if row and row[0]:
+                    pkg_name = row[0]
+        except Exception:
+            pass
+
+        if pkg_name:
+            url = f"{_BASE}/appdetail/{pkg_name}"
+        else:
+            url = f"{_BASE}/app/{platform_id}"
+
         try:
             client = await self.get_client()
             await self.throttle()
-            resp = await client.get(url, timeout=20)
+            resp = await client.get(
+                url,
+                headers={
+                    "Accept-Language": "zh-CN,zh;q=0.9",
+                    "Referer": f"{_BASE}/wechat-game",
+                },
+                timeout=20,
+            )
             resp.raise_for_status()
             html = resp.text
         except Exception as e:
@@ -183,23 +226,9 @@ class WeChatMiniScraper(BaseScraper):
         if not next_data:
             return None
 
-        # Detail pages put the app blob in pageProps.context.detailApp or similar
-        def _walk(obj: Any) -> dict | None:
-            if isinstance(obj, dict):
-                if "app_id" in obj and ("app_name" in obj or "name" in obj):
-                    return obj
-                for v in obj.values():
-                    found = _walk(v)
-                    if found:
-                        return found
-            elif isinstance(obj, list):
-                for x in obj:
-                    found = _walk(x)
-                    if found:
-                        return found
-            return None
-
-        app = _walk(next_data) or {}
+        # Detail pages put the app blob inside the first component of
+        # dynamicCardResponse — usually yybn_game_basic_info.itemData[0].
+        app = _find_detail_app(next_data)
         if not app:
             return None
 
@@ -207,12 +236,22 @@ class WeChatMiniScraper(BaseScraper):
             platform_id=platform_id,
             name=(app.get("app_name") or app.get("name") or "").strip(),
             developer=(app.get("developer") or app.get("cp_name") or None),
-            description=(app.get("editor_intro") or app.get("description") or None),
+            description=(
+                app.get("editor_intro")
+                or app.get("description")
+                or None
+            ),
             genre=(app.get("cate_name_new") or app.get("cate_name") or None),
             icon_url=(app.get("icon") or None),
-            screenshots=_collect_screenshots(app),
+            screenshots=_parse_snap_shots(app),
             url=url,
-            metadata={"source": "sj.qq.com"},
+            metadata={
+                "source": "sj.qq.com",
+                "pkg_name": app.get("pkg_name"),
+                "username": app.get("username"),
+                "tags": app.get("tags"),
+                "ms_store_id": app.get("ms_store_id"),
+            },
         )
 
 
@@ -285,7 +324,7 @@ def _collect_rank_items(next_data: dict, chart_type: str) -> list[dict]:
 
 
 def _collect_screenshots(app: dict) -> list[str]:
-    """Extract screenshot URLs from an sj.qq.com app blob."""
+    """Extract screenshot URLs from an sj.qq.com app blob (deprecated path)."""
     shots: list[str] = []
     for key in ("audited_snapshots", "screenshots", "image"):
         v = app.get(key)
@@ -300,3 +339,59 @@ def _collect_screenshots(app: dict) -> list[str]:
         elif isinstance(v, str):
             shots.append(v)
     return shots[:10]
+
+
+def _parse_snap_shots(app: dict) -> list[str]:
+    """Extract screenshot URLs from the real sj.qq.com detail page.
+
+    sj.qq.com returns `snap_shots` as a **comma-separated string** of URLs,
+    not a list. Empty strings and placeholder entries are filtered out.
+    """
+    v = app.get("snap_shots") or app.get("audited_snapshots")
+    if not v:
+        return []
+    if isinstance(v, str):
+        parts = [p.strip() for p in v.split(",")]
+    elif isinstance(v, list):
+        parts = [str(p).strip() for p in v if p]
+    else:
+        return []
+    return [p for p in parts if p and p.startswith("http")][:10]
+
+
+def _find_detail_app(next_data: dict) -> dict | None:
+    """Walk a detail-page __NEXT_DATA__ and return the basic_info app item.
+
+    The interesting blob is usually at:
+      pageProps.dynamicCardResponse.data.components[N].data.itemData[0]
+    where the card's ID contains 'game_basic_info' or similar.
+    """
+    try:
+        components = (
+            next_data.get("props", {})
+            .get("pageProps", {})
+            .get("dynamicCardResponse", {})
+            .get("data", {})
+            .get("components", [])
+        )
+    except AttributeError:
+        return None
+
+    # Prefer the basic_info card if present
+    for comp in components:
+        card_id = (comp.get("cardId") or "").lower()
+        if "basic_info" in card_id or "game_detail" in card_id:
+            items = (comp.get("data") or {}).get("itemData") or []
+            for it in items:
+                if isinstance(it, dict) and (it.get("app_id") or it.get("pkg_name")):
+                    return it
+
+    # Fallback: the first component's first item that looks like an app
+    for comp in components:
+        items = (comp.get("data") or {}).get("itemData") or []
+        for it in items:
+            if isinstance(it, dict) and (
+                it.get("app_id") and (it.get("app_name") or it.get("name"))
+            ):
+                return it
+    return None

@@ -404,11 +404,18 @@ def run_scrape_reviews(
 
 
 def run_scrape_all_reviews(limit_per_game: int = 100) -> int:
-    """Scrape reviews for all platform_listings of games above threshold score."""
+    """Scrape reviews for all platform_listings of games above threshold score.
+
+    Review sources:
+      - google_play / app_store / steam / taptap: direct review endpoints
+      - wechat_mini: WeChat has no public review API, so we use BilibiliReviewScraper
+        to pull top comments on game-related Bilibili videos as a proxy signal.
+    """
     import json as _json
 
     from src.scrapers.reviews import (
         AppStoreReviewScraper,
+        BilibiliReviewScraper,
         GooglePlayReviewScraper,
         SteamReviewScraper,
         TapTapReviewScraper,
@@ -419,14 +426,18 @@ def run_scrape_all_reviews(limit_per_game: int = 100) -> int:
         "steam": SteamReviewScraper,
         "app_store": AppStoreReviewScraper,
         "taptap": TapTapReviewScraper,
+        "wechat_mini": BilibiliReviewScraper,
     }
 
     logger.info("Starting bulk review scrape for high-potential games")
     with psycopg.connect(DB_URL) as conn:
-        # Only scrape reviews for games with potential score >= 50 OR tagged as watchlist
+        # Only scrape reviews for games with potential score >= 50 OR watchlisted.
+        # For wechat_mini we also need g.name_zh so the Bilibili scraper can
+        # search by Chinese name rather than Tencent app_id.
         listings = conn.execute(
             """
-            SELECT pl.id, pl.platform, pl.platform_id, pl.metadata
+            SELECT pl.id, pl.platform, pl.platform_id, pl.metadata,
+                   g.name_zh, g.name_en
             FROM platform_listings pl
             JOIN games g ON pl.game_id = g.id
             LEFT JOIN potential_scores ps ON ps.game_id = g.id AND ps.scored_at = CURRENT_DATE
@@ -437,6 +448,7 @@ def run_scrape_all_reviews(limit_per_game: int = 100) -> int:
                       SELECT 1 FROM game_tags gt
                       WHERE gt.game_id = g.id AND gt.tag = 'watchlist'
                   )
+                  OR pl.platform = 'wechat_mini'
               )
             ORDER BY ps.overall_score DESC NULLS LAST
             LIMIT 100
@@ -445,7 +457,7 @@ def run_scrape_all_reviews(limit_per_game: int = 100) -> int:
         ).fetchall()
 
         total = 0
-        for listing_id, platform, platform_id_value, metadata in listings:
+        for listing_id, platform, platform_id_value, metadata, name_zh, name_en in listings:
             scraper_cls = REVIEW_SCRAPER_MAP.get(platform)
             if not scraper_cls:
                 continue
@@ -458,9 +470,24 @@ def run_scrape_all_reviews(limit_per_game: int = 100) -> int:
                     meta = metadata if isinstance(metadata, dict) else _json.loads(metadata)
                     region = meta.get("region", region)
                     lang = meta.get("lang", lang)
+
+                # For wechat_mini: Bilibili scraper takes the Chinese game
+                # name, not the Tencent app_id, because Bilibili has no
+                # concept of game IDs — it searches by keyword.
+                search_key = platform_id_value
+                if platform == "wechat_mini":
+                    search_key = (name_zh or name_en or "").strip()
+                    region = "CN"
+                    lang = "zh"
+                    if not search_key:
+                        logger.debug(
+                            f"Skipping wechat_mini listing {listing_id}: no name"
+                        )
+                        continue
+
                 reviews = asyncio.run(
                     scraper.scrape_reviews_safe(
-                        platform_id_value, region=region, lang=lang, limit=limit_per_game
+                        search_key, region=region, lang=lang, limit=limit_per_game
                     )
                 )
                 try:
