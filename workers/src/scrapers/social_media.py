@@ -45,7 +45,21 @@ class SocialMediaScraper(BaseScraper):
 
     def __init__(self, proxy_url: str | None = None):
         super().__init__(proxy_url)
-        self.tikhub_api_key = os.environ.get("TIKHUB_API_KEY")
+        # SOCIAL_SIGNALS_USE_TIKHUB gates whether this aggregator-level scraper
+        # hits TikHub at all. On small TikHub plans (≤ 1000/month) you want
+        # to leave this off and let run_scrape_social_depth — which already
+        # targets fewer, higher-value games — consume the TikHub budget.
+        tikhub_enabled = (
+            os.environ.get("SOCIAL_SIGNALS_USE_TIKHUB", "false").strip().lower()
+            == "true"
+        )
+        raw_key = os.environ.get("TIKHUB_API_KEY", "").strip()
+        self.tikhub_api_key = raw_key if (tikhub_enabled and raw_key) else None
+        if raw_key and not tikhub_enabled:
+            logger.info(
+                "[social_media] TIKHUB_API_KEY is set but "
+                "SOCIAL_SIGNALS_USE_TIKHUB != 'true' — Douyin/TikTok skipped."
+            )
 
     async def search_bilibili(self, game_name: str) -> SocialSignal:
         """Search Bilibili for game-related videos."""

@@ -88,6 +88,9 @@ services:
       REDIS_URL: redis://redis:6379/0
       SCRAPE_PROXY_URL: ${SCRAPE_PROXY_URL:-}
       TIKHUB_API_KEY: ${TIKHUB_API_KEY:-}
+      # TikHub cost controls (see .env.example for budget math)
+      SOCIAL_SIGNALS_USE_TIKHUB: ${SOCIAL_SIGNALS_USE_TIKHUB:-false}
+      SOCIAL_DEPTH_GAME_LIMIT: ${SOCIAL_DEPTH_GAME_LIMIT:-8}
       APPGROWING_API_KEY: ${APPGROWING_API_KEY:-}
       STEAM_API_KEY: ${STEAM_API_KEY:-}
       FEISHU_WEBHOOK_URL: ${FEISHU_WEBHOOK_URL:-}

@@ -601,9 +601,17 @@ def run_game_name_translate(limit: int = 300):
 
 
 def run_scrape_social_depth(limit_per_game: int = 20):
-    """Scrape deep social content (video titles + hashtags + metrics) for high-potential games."""
+    """Scrape deep social content (video titles + hashtags + metrics) for high-potential games.
+
+    Game count is bounded by SOCIAL_DEPTH_GAME_LIMIT env var (default 8).
+    Each game costs 2 TikHub calls (Douyin + TikTok) plus free Bilibili/YouTube
+    quota, so with the default 8 games × 30 days = 480 TikHub calls/month —
+    fits inside a 600/month TikHub plan with 20% headroom.
+    """
     from src.scrapers.social_depth import SocialDepthScraper
     import json as _json
+
+    game_limit = int(os.environ.get("SOCIAL_DEPTH_GAME_LIMIT", "8"))
 
     scraper = SocialDepthScraper()
 
@@ -617,8 +625,9 @@ def run_scrape_social_depth(limit_per_game: int = 20):
             WHERE ps.overall_score >= 60
                OR EXISTS (SELECT 1 FROM game_tags gt WHERE gt.game_id = g.id AND gt.tag = 'watchlist')
             ORDER BY ps.overall_score DESC NULLS LAST
-            LIMIT 30
-            """
+            LIMIT %s
+            """,
+            (game_limit,),
         ).fetchall()
 
         total = 0
