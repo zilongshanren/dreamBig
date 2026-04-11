@@ -18,20 +18,19 @@ type RankRow = {
   icon: string | null;
 };
 
-const MAIN_CHARTS: Array<{ key: string; title: string; subtitle: string }> = [
-  { key: "hot", title: "热门榜", subtitle: "整体最热的 20 款" },
-  { key: "top_grossing", title: "畅销榜", subtitle: "广告 / 付费收入领先" },
-  { key: "new", title: "新游榜", subtitle: "新入榜，机会窗口" },
-  { key: "featured", title: "精选榜", subtitle: "腾讯官方编辑选" },
-];
-
-const TAG_CHARTS: Array<{ key: string; title: string }> = [
-  { key: "tag_puzzle", title: "休闲益智" },
-  { key: "tag_rpg", title: "角色扮演" },
-  { key: "tag_board", title: "棋牌" },
-  { key: "tag_strategy", title: "策略" },
-  { key: "tag_adventure", title: "动作冒险" },
-  { key: "tag_singleplayer", title: "单机" },
+// All 10 WeChat charts rendered on the dashboard — each as a full ChartCard
+// (top 10 preview + "查看全部 →" link to /charts/<key> with pagination).
+const ALL_CHARTS: Array<{ key: string; title: string; subtitle: string }> = [
+  { key: "hot", title: "热门榜", subtitle: "Tencent YYB 热度排行 Top 400" },
+  { key: "top_grossing", title: "畅销榜", subtitle: "广告 / 付费收入领先 Top 400" },
+  { key: "new", title: "新游榜", subtitle: "新入榜，机会窗口 Top 400" },
+  { key: "featured", title: "精选榜", subtitle: "腾讯官方编辑精选" },
+  { key: "tag_puzzle", title: "休闲益智榜", subtitle: "休闲益智类微信游戏" },
+  { key: "tag_rpg", title: "角色扮演榜", subtitle: "角色扮演类微信游戏" },
+  { key: "tag_board", title: "棋牌榜", subtitle: "棋牌类微信游戏" },
+  { key: "tag_strategy", title: "策略榜", subtitle: "策略类微信游戏" },
+  { key: "tag_adventure", title: "动作冒险榜", subtitle: "动作冒险类微信游戏" },
+  { key: "tag_singleplayer", title: "单机榜", subtitle: "单机类微信游戏" },
 ];
 
 const GRADE_COLORS: Record<string, string> = {
@@ -131,44 +130,6 @@ async function getChartTop10(chartKey: string): Promise<RankRow[]> {
     }));
   } catch {
     return [];
-  }
-}
-
-async function getCategoryTop3(
-  tagKey: string,
-): Promise<{ title: string; games: RankRow[] }> {
-  const meta = TAG_CHARTS.find((c) => c.key === tagKey) || {
-    key: tagKey,
-    title: tagKey,
-  };
-  try {
-    const today = todayDate();
-    const rows = await prisma.rankingSnapshot.findMany({
-      where: {
-        chartType: tagKey,
-        snapshotDate: today,
-        platformListing: { platform: "wechat_mini" },
-      },
-      orderBy: { rankPosition: "asc" },
-      take: 3,
-      include: {
-        platformListing: { include: { game: true } },
-      },
-    });
-    return {
-      title: meta.title,
-      games: rows.map((r) => ({
-        rank_position: r.rankPosition,
-        rank_change: r.rankChange,
-        game_id: r.platformListing.gameId,
-        name: r.platformListing.name,
-        name_zh: r.platformListing.game.nameZh,
-        developer: r.platformListing.game.developer,
-        icon: r.platformListing.game.thumbnailUrl,
-      })),
-    };
-  } catch {
-    return { title: meta.title, games: [] };
   }
 }
 
@@ -364,10 +325,12 @@ function ChartCard({
   title,
   subtitle,
   rows,
+  viewAllHref,
 }: {
   title: string;
   subtitle: string;
   rows: RankRow[];
+  viewAllHref: string;
 }) {
   return (
     <div className="bg-white rounded-lg shadow p-4">
@@ -376,7 +339,12 @@ function ChartCard({
           <h3 className="font-semibold text-base">{title}</h3>
           <p className="text-xs text-gray-400">{subtitle}</p>
         </div>
-        <span className="text-xs text-gray-300">{rows.length} 项</span>
+        <Link
+          href={viewAllHref}
+          className="text-xs text-blue-500 hover:underline whitespace-nowrap"
+        >
+          查看全部 →
+        </Link>
       </div>
       {rows.length === 0 ? (
         <p className="text-gray-400 text-sm py-4 text-center">暂无数据</p>
@@ -384,38 +352,6 @@ function ChartCard({
         <div className="space-y-0.5">
           {rows.map((r) => (
             <RankCell key={`${r.game_id}-${r.rank_position}`} row={r} />
-          ))}
-        </div>
-      )}
-    </div>
-  );
-}
-
-function CategoryCard({
-  title,
-  games,
-}: {
-  title: string;
-  games: RankRow[];
-}) {
-  return (
-    <div className="bg-white rounded-lg shadow p-3">
-      <h4 className="font-semibold text-sm mb-2">{title}</h4>
-      {games.length === 0 ? (
-        <p className="text-gray-400 text-xs py-2">暂无</p>
-      ) : (
-        <div className="space-y-1">
-          {games.map((g) => (
-            <Link
-              key={g.game_id}
-              href={`/games/${g.game_id}`}
-              className="flex items-center gap-2 py-1 px-1 text-xs hover:bg-gray-50 rounded"
-            >
-              <span className="w-4 text-orange-500 font-bold">
-                {g.rank_position}
-              </span>
-              <span className="truncate flex-1">{g.name_zh || g.name}</span>
-            </Link>
           ))}
         </div>
       )}
@@ -461,12 +397,12 @@ export default async function WechatDashboardPage() {
     getChartTop10("top_grossing"),
     getChartTop10("new"),
     getChartTop10("featured"),
-    getCategoryTop3("tag_puzzle"),
-    getCategoryTop3("tag_rpg"),
-    getCategoryTop3("tag_board"),
-    getCategoryTop3("tag_strategy"),
-    getCategoryTop3("tag_adventure"),
-    getCategoryTop3("tag_singleplayer"),
+    getChartTop10("tag_puzzle"),
+    getChartTop10("tag_rpg"),
+    getChartTop10("tag_board"),
+    getChartTop10("tag_strategy"),
+    getChartTop10("tag_adventure"),
+    getChartTop10("tag_singleplayer"),
     getIAACandidates(),
     getLatestReviews(),
     getSocialBuzz(),
@@ -474,20 +410,18 @@ export default async function WechatDashboardPage() {
     getRecentAlerts(workspaceId),
   ]);
 
-  const categories = [
+  // Parallel array aligned with ALL_CHARTS order
+  const chartData: Array<RankRow[]> = [
+    hotChart,
+    grossingChart,
+    newChart,
+    featuredChart,
     tagPuzzle,
     tagRpg,
     tagBoard,
     tagStrategy,
     tagAdventure,
     tagSingleplayer,
-  ];
-
-  const chartData: Array<RankRow[]> = [
-    hotChart,
-    grossingChart,
-    newChart,
-    featuredChart,
   ];
 
   return (
@@ -514,27 +448,19 @@ export default async function WechatDashboardPage() {
         <StatCard label="高潜力 (≥60)" value={stats.highPotential} />
       </section>
 
-      {/* Section 1: 4 main ranking charts */}
+      {/* Section 1: all 10 ranking charts (top 10 preview each, click 查看全部
+          to see full paginated list up to 400 rows at /charts/<key>) */}
       <section>
-        <h2 className="text-lg font-semibold mb-3">榜单动态</h2>
+        <h2 className="text-lg font-semibold mb-3">榜单动态（全部 10 榜）</h2>
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-          {MAIN_CHARTS.map((meta, i) => (
+          {ALL_CHARTS.map((meta, i) => (
             <ChartCard
               key={meta.key}
               title={meta.title}
               subtitle={meta.subtitle}
               rows={chartData[i]}
+              viewAllHref={`/charts/${meta.key}`}
             />
-          ))}
-        </div>
-      </section>
-
-      {/* Section 2: Category heat */}
-      <section>
-        <h2 className="text-lg font-semibold mb-3">品类热度</h2>
-        <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-3">
-          {categories.map((c) => (
-            <CategoryCard key={c.title} title={c.title} games={c.games} />
           ))}
         </div>
       </section>
@@ -551,10 +477,10 @@ export default async function WechatDashboardPage() {
               </p>
             </div>
             <Link
-              href="/iaa"
+              href="/charts/iaa"
               className="text-xs text-blue-500 hover:underline"
             >
-              全部 →
+              查看全部 →
             </Link>
           </div>
           {iaaCandidates.length === 0 ? (
@@ -627,6 +553,12 @@ export default async function WechatDashboardPage() {
                 近 7 天 B 站 / 抖音播放量聚合
               </p>
             </div>
+            <Link
+              href="/charts/social"
+              className="text-xs text-blue-500 hover:underline whitespace-nowrap"
+            >
+              查看全部 →
+            </Link>
           </div>
           {socialBuzz.length === 0 ? (
             <p className="text-gray-400 text-sm py-4 text-center">
