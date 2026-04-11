@@ -23,13 +23,23 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: "invalid_password" }, { status: 400 });
   }
 
+  // Bootstrap exception: the very first user is always allowed — that's how
+  // super_admin gets created on a fresh install. After that, public signup
+  // is gated on ALLOW_SIGNUP env var (defaults to "false" for security).
+  const userCount = await prisma.user.count();
+  if (userCount > 0 && process.env.ALLOW_SIGNUP !== "true") {
+    return NextResponse.json(
+      { error: "signup_disabled", message: "Public signup is disabled. Contact an administrator to create an account." },
+      { status: 403 },
+    );
+  }
+
   const existing = await prisma.user.findUnique({ where: { email } });
   if (existing) {
     return NextResponse.json({ error: "email_exists" }, { status: 409 });
   }
 
   // First user becomes super_admin
-  const userCount = await prisma.user.count();
   const role = userCount === 0 ? "super_admin" : "viewer";
 
   const passwordHash = await bcrypt.hash(password, 10);

@@ -50,6 +50,7 @@ export default function SignupPage() {
           invalid_password: "密码至少 8 位",
           invalid_input: "输入不合法",
           invalid_body: "请求格式错误",
+          signup_disabled: "公开注册已关闭，请联系管理员开通账号",
         };
         setError(errorMap[data.error] || "注册失败，请重试");
         setLoading(false);

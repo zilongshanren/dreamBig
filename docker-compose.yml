@@ -49,6 +49,10 @@ services:
       # Auth.js v5 — trust the Host header forwarded by Caddy reverse proxy.
       # Without this, /api/auth/* returns UntrustedHost in production mode.
       AUTH_TRUST_HOST: ${AUTH_TRUST_HOST:-true}
+      # Public signup toggle. Default false for production safety — anyone
+      # hitting /signup will get 403 unless this is flipped to "true".
+      # The first-user bootstrap case still works regardless of this setting.
+      ALLOW_SIGNUP: ${ALLOW_SIGNUP:-false}
       FEISHU_APP_ID: ${FEISHU_APP_ID:-}
       FEISHU_APP_SECRET: ${FEISHU_APP_SECRET:-}
       FEISHU_VERIFICATION_TOKEN: ${FEISHU_VERIFICATION_TOKEN:-}
