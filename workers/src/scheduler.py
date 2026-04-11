@@ -144,8 +144,14 @@ def enqueue_asset_analysis():
 
 
 def enqueue_trailer_analysis():
-    queue.enqueue("src.worker.run_trailer_analysis", job_timeout="60m")
-    logger.info("Enqueued trailer analysis")
+    # Limit=5 is intentionally conservative for small VPSes (~2 core / 40G disk).
+    # Each game downloads the first 60s of a trailer (~20MB), extracts 6 frames,
+    # sends to GPT-4o-mini vision, and cleans up — peak disk per game is < 50MB.
+    # 5 games sequentially runs in ~5-10 min total, well within resource budget.
+    # Raise this (or run the worker CLI manually with a larger limit) when you
+    # have spare budget; lower it if you're tight on tokens.
+    queue.enqueue("src.worker.run_trailer_analysis", 5, job_timeout="60m")
+    logger.info("Enqueued trailer analysis (limit=5)")
 
 
 def enqueue_feishu_worker():

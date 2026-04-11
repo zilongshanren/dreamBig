@@ -61,6 +61,33 @@ def _has_ffmpeg() -> bool:
     return shutil.which("ffmpeg") is not None
 
 
+# Minimum free disk in MB to proceed — trailers are capped to ~20MB each and
+# cleaned up in finally, but we want headroom for ffmpeg temp buffers and the
+# Docker overlay fs. 200MB is a generous floor for small VPSes.
+MIN_FREE_DISK_MB = 200
+
+
+def _has_enough_disk(path: Path) -> bool:
+    """Return True if the filesystem holding ``path`` has > MIN_FREE_DISK_MB free.
+
+    Used to bail out early on small VPSes where the Docker overlay filesystem
+    could fill up. We fail open (return True) if the check itself errors.
+    """
+    try:
+        stat = shutil.disk_usage(path.parent if not path.exists() else path)
+        free_mb = stat.free / (1024 * 1024)
+        if free_mb < MIN_FREE_DISK_MB:
+            logger.warning(
+                f"Skipping trailer analysis: only {free_mb:.0f}MB free "
+                f"on {path}, need at least {MIN_FREE_DISK_MB}MB"
+            )
+            return False
+        return True
+    except Exception as e:  # pragma: no cover — defensive
+        logger.debug(f"Disk-space probe failed on {path}: {e}; proceeding anyway")
+        return True
+
+
 def _import_yt_dlp() -> Any | None:
     """Import yt-dlp lazily. Returns the module or None if unavailable."""
     try:
@@ -263,6 +290,8 @@ class TrailerAnalyzer:
         if not _has_ffmpeg():
             logger.warning("Skipping trailer analysis: ffmpeg binary not on PATH")
             return None
+        if not _has_enough_disk(TEMP_ROOT):
+            return None  # _has_enough_disk already logged the reason
 
         with psycopg.connect(self.db_url) as conn:
             trailer_url = _find_trailer_url(conn, game_id)
