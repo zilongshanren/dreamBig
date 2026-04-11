@@ -445,8 +445,14 @@ def run_scrape_all_reviews(limit_per_game: int = 100) -> int:
 
     Review sources:
       - google_play / app_store / steam / taptap: direct review endpoints
-      - wechat_mini: WeChat has no public review API, so we use BilibiliReviewScraper
-        to pull top comments on game-related Bilibili videos as a proxy signal.
+      - wechat_mini: BilibiliReviewScraper (Playwright → Bilibili video comments
+        as a proxy, since WeChat has no public review API)
+
+    One scraper instance per platform (NOT per game) sharing a SINGLE
+    event loop — previously we crashed after the first wechat_mini game
+    because every iteration re-started Playwright in a fresh asyncio
+    loop and the browser's handles were bound to the dead loop. Same
+    root cause as the old run_social_signals bug.
     """
     import json as _json
 
@@ -468,9 +474,6 @@ def run_scrape_all_reviews(limit_per_game: int = 100) -> int:
 
     logger.info("Starting bulk review scrape for high-potential games")
     with psycopg.connect(DB_URL) as conn:
-        # Only scrape reviews for games with potential score >= 50 OR watchlisted.
-        # For wechat_mini we also need g.name_zh so the Bilibili scraper can
-        # search by Chinese name rather than Tencent app_id.
         listings = conn.execute(
             """
             SELECT pl.id, pl.platform, pl.platform_id, pl.metadata,
@@ -493,76 +496,118 @@ def run_scrape_all_reviews(limit_per_game: int = 100) -> int:
             (list(REVIEW_SCRAPER_MAP.keys()),),
         ).fetchall()
 
-        total = 0
-        for listing_id, platform, platform_id_value, metadata, name_zh, name_en in listings:
-            scraper_cls = REVIEW_SCRAPER_MAP.get(platform)
-            if not scraper_cls:
-                continue
-            try:
-                scraper = scraper_cls()
-                # Determine region/lang from listing metadata or defaults
-                region = "US"
-                lang = "en"
-                if metadata:
-                    meta = metadata if isinstance(metadata, dict) else _json.loads(metadata)
-                    region = meta.get("region", region)
-                    lang = meta.get("lang", lang)
+        logger.info(
+            f"Bulk review scrape: {len(listings)} listings selected across "
+            f"{len(set(r[1] for r in listings))} platforms"
+        )
 
-                # For wechat_mini: Bilibili scraper takes the Chinese game
-                # name, not the Tencent app_id, because Bilibili has no
-                # concept of game IDs — it searches by keyword.
-                search_key = platform_id_value
-                if platform == "wechat_mini":
-                    search_key = (name_zh or name_en or "").strip()
-                    region = "CN"
-                    lang = "zh"
-                    if not search_key:
-                        logger.debug(
-                            f"Skipping wechat_mini listing {listing_id}: no name"
-                        )
-                        continue
+        # Group by platform so we can instantiate one scraper per platform
+        # and share the browser / client across every game in that platform.
+        from collections import defaultdict
+        by_platform: dict[str, list] = defaultdict(list)
+        for row in listings:
+            by_platform[row[1]].append(row)
 
-                reviews = asyncio.run(
-                    scraper.scrape_reviews_safe(
-                        search_key, region=region, lang=lang, limit=limit_per_game
-                    )
-                )
-                try:
-                    asyncio.run(scraper.close())
-                except RuntimeError:
-                    pass
-
-                for r in reviews:
-                    conn.execute(
-                        """
-                        INSERT INTO reviews
-                            (platform_listing_id, external_id, rating, content,
-                             author_name, helpful_count, language, posted_at, scraped_at)
-                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, NOW())
-                        ON CONFLICT (platform_listing_id, external_id) DO NOTHING
-                        """,
-                        (
-                            listing_id,
-                            r.external_id,
-                            r.rating,
-                            (r.content or "")[:4000],
-                            r.author_name,
-                            r.helpful_count,
-                            r.language,
-                            r.posted_at,
-                        ),
-                    )
-                conn.commit()
-                total += len(reviews)
+        async def _run() -> int:
+            processed = 0
+            for platform, rows in by_platform.items():
+                scraper_cls = REVIEW_SCRAPER_MAP.get(platform)
+                if not scraper_cls:
+                    continue
                 logger.info(
-                    f"Scraped {len(reviews)} reviews for {platform}/{platform_id_value}"
+                    f"[bulk_reviews] platform={platform} listings={len(rows)} "
+                    f"(1 shared scraper instance)"
                 )
-            except Exception as e:
-                logger.warning(
-                    f"Review scrape failed for {platform}/{platform_id_value}: {e}"
-                )
-                conn.rollback()
+                scraper = scraper_cls()
+                platform_inserted = 0
+                try:
+                    for (
+                        listing_id, _plat, platform_id_value,
+                        metadata, name_zh, name_en,
+                    ) in rows:
+                        # Region/lang from listing metadata
+                        region = "US"
+                        lang = "en"
+                        if metadata:
+                            meta = (
+                                metadata
+                                if isinstance(metadata, dict)
+                                else _json.loads(metadata)
+                            )
+                            region = meta.get("region", region)
+                            lang = meta.get("lang", lang)
 
+                        # wechat_mini → Bilibili search by Chinese name
+                        search_key = platform_id_value
+                        if platform == "wechat_mini":
+                            search_key = (name_zh or name_en or "").strip()
+                            region = "CN"
+                            lang = "zh"
+                            if not search_key:
+                                logger.debug(
+                                    f"[bulk_reviews] skip wechat listing "
+                                    f"{listing_id}: no name"
+                                )
+                                continue
+
+                        try:
+                            reviews = await scraper.scrape_reviews_safe(
+                                search_key,
+                                region=region,
+                                lang=lang,
+                                limit=limit_per_game,
+                            )
+                        except Exception as e:
+                            logger.warning(
+                                f"[bulk_reviews] {platform} listing "
+                                f"{listing_id} ({search_key!r}) raised: {e}"
+                            )
+                            continue
+
+                        per_listing_new = 0
+                        for r in reviews:
+                            conn.execute(
+                                """
+                                INSERT INTO reviews
+                                    (platform_listing_id, external_id, rating, content,
+                                     author_name, helpful_count, language, posted_at, scraped_at)
+                                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, NOW())
+                                ON CONFLICT (platform_listing_id, external_id) DO NOTHING
+                                """,
+                                (
+                                    listing_id,
+                                    r.external_id,
+                                    r.rating,
+                                    (r.content or "")[:4000],
+                                    r.author_name,
+                                    r.helpful_count,
+                                    r.language,
+                                    r.posted_at,
+                                ),
+                            )
+                            per_listing_new += 1
+                        conn.commit()
+                        platform_inserted += per_listing_new
+                        processed += per_listing_new
+                        logger.info(
+                            f"[bulk_reviews] {platform}/{search_key!r} "
+                            f"→ wrote {per_listing_new} reviews "
+                            f"(listing_id={listing_id})"
+                        )
+                finally:
+                    try:
+                        await scraper.close()
+                    except Exception as e:
+                        logger.debug(
+                            f"[bulk_reviews] scraper.close() for {platform}: {e}"
+                        )
+                logger.info(
+                    f"[bulk_reviews] platform={platform} DONE: "
+                    f"{platform_inserted} reviews inserted"
+                )
+            return processed
+
+        total = asyncio.run(_run())
         _record_job(conn, "reviews", "scrape_reviews", "success", total)
         logger.info(f"Bulk review scrape complete: {total} reviews total")
         return total
@@ -662,6 +707,145 @@ def run_game_name_translate(limit: int = 300):
     """Translate pending game names (name_en → name_zh via Haiku)."""
     from src.processors.game_name_translate import run_game_name_translate as _run
     return _run(DB_URL, limit=limit)
+
+
+def run_api_key_check() -> dict:
+    """End-to-end probe for YouTube / TikHub / Bilibili review paths.
+
+    Hits each real endpoint with the env-configured key and reports
+    a verdict row. Returns the report dict so callers can pipe it to
+    JSON. Prints a human-readable table to the logger as a side effect.
+    """
+    import os as _os
+    import json as _json
+    import httpx as _httpx
+
+    report: dict[str, dict] = {}
+
+    # ------------------------------------------------------------------
+    # YouTube Data API v3
+    # ------------------------------------------------------------------
+    yt_key = _os.environ.get("YOUTUBE_API_KEY", "").strip()
+    yt: dict[str, object] = {"configured": bool(yt_key)}
+    if not yt_key:
+        yt["verdict"] = "MISSING"
+        yt["detail"] = "YOUTUBE_API_KEY env var is empty"
+    else:
+        try:
+            resp = _httpx.get(
+                "https://www.googleapis.com/youtube/v3/search",
+                params={
+                    "part": "snippet",
+                    "q": "原神 小游戏",
+                    "type": "video",
+                    "maxResults": 3,
+                    "key": yt_key,
+                },
+                timeout=15,
+            )
+            yt["http"] = resp.status_code
+            if resp.status_code == 200:
+                data = resp.json()
+                items = data.get("items", []) or []
+                yt["verdict"] = "OK" if items else "EMPTY"
+                yt["result_count"] = len(items)
+                yt["sample_title"] = (
+                    items[0].get("snippet", {}).get("title")
+                    if items
+                    else None
+                )
+            else:
+                yt["verdict"] = "HTTP_ERROR"
+                body = resp.text
+                yt["detail"] = body[:300]
+        except Exception as e:
+            yt["verdict"] = "EXCEPTION"
+            yt["detail"] = str(e)[:300]
+    report["youtube"] = yt
+
+    # ------------------------------------------------------------------
+    # TikHub (Douyin search)
+    # ------------------------------------------------------------------
+    tk_key = _os.environ.get("TIKHUB_API_KEY", "").strip()
+    tk: dict[str, object] = {"configured": bool(tk_key)}
+    if not tk_key:
+        tk["verdict"] = "MISSING"
+        tk["detail"] = "TIKHUB_API_KEY env var is empty"
+    else:
+        try:
+            resp = _httpx.get(
+                "https://api.tikhub.io/api/v1/douyin/web/fetch_general_search",
+                params={"keyword": "小游戏", "offset": 0, "count": 3},
+                headers={"Authorization": f"Bearer {tk_key}"},
+                timeout=15,
+            )
+            tk["http"] = resp.status_code
+            if resp.status_code == 200:
+                data = resp.json()
+                # TikHub response shape varies; look for data.data[] or items[]
+                inner = (
+                    (data.get("data") or {}).get("data")
+                    or data.get("items")
+                    or []
+                )
+                tk["verdict"] = "OK" if inner else "EMPTY"
+                tk["result_count"] = len(inner) if isinstance(inner, list) else 0
+                tk["api_code"] = data.get("code") or data.get("status_code")
+            else:
+                tk["verdict"] = "HTTP_ERROR"
+                tk["detail"] = resp.text[:300]
+        except Exception as e:
+            tk["verdict"] = "EXCEPTION"
+            tk["detail"] = str(e)[:300]
+    report["tikhub"] = tk
+
+    # ------------------------------------------------------------------
+    # Bilibili review scraper (Playwright + public reply API)
+    # ------------------------------------------------------------------
+    bili: dict[str, object] = {"configured": True}
+    try:
+        import asyncio as _asyncio
+        from src.scrapers.reviews.bilibili import BilibiliReviewScraper
+
+        async def _probe():
+            s = BilibiliReviewScraper()
+            try:
+                reviews = await s.scrape_reviews_safe(
+                    "羊了个羊", region="CN", lang="zh", limit=10,
+                )
+                return len(reviews), reviews[:1]
+            finally:
+                await s.close()
+
+        n, sample = _asyncio.run(_probe())
+        bili["verdict"] = "OK" if n > 0 else "EMPTY"
+        bili["result_count"] = n
+        if sample:
+            bili["sample_content"] = (sample[0].content or "")[:100]
+    except Exception as e:
+        bili["verdict"] = "EXCEPTION"
+        bili["detail"] = str(e)[:300]
+    report["bilibili"] = bili
+
+    # ------------------------------------------------------------------
+    # Pretty print
+    # ------------------------------------------------------------------
+    logger.info("=" * 60)
+    logger.info("API KEY / DATA SOURCE HEALTH CHECK")
+    logger.info("=" * 60)
+    for name, row in report.items():
+        verdict = row.get("verdict", "?")
+        mark = {"OK": "✓", "EMPTY": "○", "MISSING": "✗", "HTTP_ERROR": "✗",
+                "EXCEPTION": "✗"}.get(str(verdict), "?")
+        logger.info(f"{mark} {name:10s} verdict={verdict}")
+        for k, v in row.items():
+            if k in ("configured", "verdict"):
+                continue
+            logger.info(f"    {k}: {v}")
+    logger.info("=" * 60)
+    logger.info("FULL JSON:")
+    logger.info(_json.dumps(report, ensure_ascii=False, indent=2, default=str))
+    return report
 
 
 def run_scrape_social_depth(limit_per_game: int = 20):
@@ -871,6 +1055,8 @@ if __name__ == "__main__":
     elif len(sys.argv) >= 2 and sys.argv[1] == "translate_names":
         limit = int(sys.argv[2]) if len(sys.argv) > 2 else 300
         print(run_game_name_translate(limit=limit))
+    elif len(sys.argv) >= 2 and sys.argv[1] == "api_key_check":
+        run_api_key_check()
     elif len(sys.argv) >= 3:
         platform = sys.argv[1]
         chart_type = sys.argv[2]
@@ -896,4 +1082,5 @@ if __name__ == "__main__":
         print("       python -m src.worker trailer_analysis [limit]")
         print("       python -m src.worker feishu_worker")
         print("       python -m src.worker translate_names [limit]")
+        print("       python -m src.worker api_key_check")
         print("Example: python -m src.worker app_store top_free US")

@@ -164,11 +164,18 @@ async function getIAACandidates() {
 
 async function getLatestReviews() {
   try {
+    // Order by helpfulCount (NULLs last) then most-recently scraped.
+    // Explicit nulls positioning because Bilibili comments can have
+    // like=0 (treated as 0 not null) but we still want the top-liked
+    // content first regardless.
     const rows = await prisma.review.findMany({
       where: {
         platformListing: { platform: "wechat_mini" },
       },
-      orderBy: [{ helpfulCount: "desc" }, { scrapedAt: "desc" }],
+      orderBy: [
+        { helpfulCount: { sort: "desc", nulls: "last" } },
+        { scrapedAt: "desc" },
+      ],
       take: 20,
       include: {
         platformListing: { include: { game: true } },
@@ -177,7 +184,8 @@ async function getLatestReviews() {
     return rows.map((r) => ({
       id: r.id,
       game_id: r.platformListing.gameId,
-      game_name: r.platformListing.game.nameZh || r.platformListing.game.nameEn,
+      game_name:
+        r.platformListing.game.nameZh || r.platformListing.game.nameEn,
       content: r.content,
       author: r.authorName,
       helpful: r.helpfulCount,
@@ -185,7 +193,10 @@ async function getLatestReviews() {
       sentiment: r.sentiment,
       topics: r.topics,
     }));
-  } catch {
+  } catch (e) {
+    // Log loud so we stop silently showing "no reviews" when the query
+    // itself is the thing that's broken.
+    console.error("[dashboard] getLatestReviews failed:", e);
     return [];
   }
 }
