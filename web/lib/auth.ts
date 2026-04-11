@@ -32,6 +32,9 @@ export const { handlers, signIn, signOut, auth } = NextAuth({
   adapter: PrismaAdapter(prisma),
   session: { strategy: "jwt" }, // JWT works better with credentials
   pages: { signIn: "/login" },
+  // Running behind Caddy reverse proxy — trust the forwarded Host header.
+  // Required in production mode; NextAuth v5 defaults to strict host binding.
+  trustHost: true,
   providers: [
     Credentials({
       credentials: {
