@@ -1,6 +1,7 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
 import { prisma } from "@/lib/prisma";
+import { GenerateReportButton } from "./generate-button";
 
 export const dynamic = "force-dynamic";
 
@@ -485,17 +486,5 @@ function EvidenceRefs({ gameId, refs }: { gameId: number; refs: string[] }) {
   );
 }
 
-// Generate button (simple form POST to API route)
-function GenerateReportButton({ gameId }: { gameId: number }) {
-  return (
-    <form action="/api/iaa/analyze" method="post">
-      <input type="hidden" name="gameId" value={gameId} />
-      <button
-        type="submit"
-        className="text-sm bg-blue-600 hover:bg-blue-700 text-white rounded px-4 py-2 font-medium"
-      >
-        立即生成
-      </button>
-    </form>
-  );
-}
+// Generate button extracted to ./generate-button.tsx (client component).
+// Kept the import at the top; nothing else needed here.

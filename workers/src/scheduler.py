@@ -153,6 +153,11 @@ def enqueue_feishu_worker():
     logger.info("Enqueued feishu command processor")
 
 
+def enqueue_game_name_translate():
+    queue.enqueue("src.worker.run_game_name_translate", job_timeout="30m")
+    logger.info("Enqueued game name translation")
+
+
 def main():
     scheduler = BlockingScheduler()
 
@@ -304,6 +309,12 @@ def main():
 
     # === Every 1 minute: Feishu command processor (bot needs quick response) ===
     scheduler.add_job(enqueue_feishu_worker, "interval", minutes=1, id="feishu_worker")
+
+    # === 07:15 HKT: Game name EN → ZH translation (after overnight scrapes,
+    #                before scoring so dashboard shows Chinese names) ===
+    scheduler.add_job(
+        enqueue_game_name_translate, "cron", hour=7, minute=15, id="game_name_translate",
+    )
 
     logger.info("Scheduler started. Jobs registered:")
     for job in scheduler.get_jobs():

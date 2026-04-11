@@ -558,6 +558,12 @@ def run_feishu_command_processor():
     return _run(DB_URL)
 
 
+def run_game_name_translate(limit: int = 300):
+    """Translate pending game names (name_en → name_zh via Haiku)."""
+    from src.processors.game_name_translate import run_game_name_translate as _run
+    return _run(DB_URL, limit=limit)
+
+
 def run_scrape_social_depth(limit_per_game: int = 20):
     """Scrape deep social content (video titles + hashtags + metrics) for high-potential games."""
     from src.scrapers.social_depth import SocialDepthScraper
@@ -742,6 +748,9 @@ if __name__ == "__main__":
         print(run_trailer_analysis(limit=limit))
     elif len(sys.argv) >= 2 and sys.argv[1] == "feishu_worker":
         print(run_feishu_command_processor())
+    elif len(sys.argv) >= 2 and sys.argv[1] == "translate_names":
+        limit = int(sys.argv[2]) if len(sys.argv) > 2 else 300
+        print(run_game_name_translate(limit=limit))
     elif len(sys.argv) >= 3:
         platform = sys.argv[1]
         chart_type = sys.argv[2]
@@ -766,4 +775,5 @@ if __name__ == "__main__":
         print("       python -m src.worker asset_analysis [limit]")
         print("       python -m src.worker trailer_analysis [limit]")
         print("       python -m src.worker feishu_worker")
+        print("       python -m src.worker translate_names [limit]")
         print("Example: python -m src.worker app_store top_free US")

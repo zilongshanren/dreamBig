@@ -48,6 +48,7 @@ TASK_MODEL_MAP: dict[str, PoeModel] = {
     "iaa_advice": PoeModel.OPUS,
     "genre_trend_summary": PoeModel.SONNET,
     "review_summary": PoeModel.SONNET,
+    "game_name_translate": PoeModel.HAIKU,
 }
 
 

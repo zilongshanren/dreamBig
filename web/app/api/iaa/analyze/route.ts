@@ -95,13 +95,6 @@ export async function POST(req: NextRequest) {
       existing &&
       Date.now() - existing.generatedAt.getTime() < 24 * 3600 * 1000
     ) {
-      // If this was a form POST (from the detail page), redirect back to it.
-      if (!contentType.includes("application/json")) {
-        return NextResponse.redirect(
-          new URL(`/iaa/${gameId}`, req.url),
-          303,
-        );
-      }
       return NextResponse.json({
         status: "recent",
         message: "已有最新报告",
@@ -109,7 +102,9 @@ export async function POST(req: NextRequest) {
       });
     }
 
-    // Enqueue via scrape_jobs placeholder
+    // Enqueue via scrape_jobs placeholder. The worker loop
+    // (poll_internal_jobs) picks up rows where platform='internal' AND
+    // status='pending' every 5 minutes.
     const job = await prisma.scrapeJob.create({
       data: {
         platform: "internal",
@@ -118,11 +113,6 @@ export async function POST(req: NextRequest) {
         errorMessage: JSON.stringify({ gameId }),
       },
     });
-
-    if (!contentType.includes("application/json")) {
-      // Form POST: redirect back to the detail page so user sees update
-      return NextResponse.redirect(new URL(`/iaa/${gameId}`, req.url), 303);
-    }
 
     return NextResponse.json({
       status: "queued",
