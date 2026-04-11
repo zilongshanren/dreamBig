@@ -354,6 +354,295 @@ def _get_iaa_top(
     ]
 
 
+# ------------------------------------------------------------
+# NEW SIGNALS (v2): review voice / hook phrases / market history
+# ------------------------------------------------------------
+
+
+def _get_review_voice(
+    conn: psycopg.Connection, today: date, limit_games: int = 12
+) -> list[dict[str, Any]]:
+    """For the top WeChat games by cross-chart presence today, aggregate
+    the player voice: positive/negative review counts + top 3 topic
+    summaries (positive side) + top 3 (negative side).
+
+    Returns one row per game. Empty if reviews / review_topic_summaries
+    tables are sparse (expected on early runs).
+    """
+    rows = conn.execute(
+        """
+        WITH focus_games AS (
+            SELECT g.id AS game_id,
+                   COALESCE(g.name_zh, g.name_en, 'Unknown') AS name,
+                   COUNT(DISTINCT rs.chart_type) AS chart_count,
+                   MIN(rs.rank_position) AS best_rank
+            FROM games g
+            JOIN platform_listings pl ON pl.game_id = g.id
+            JOIN ranking_snapshots rs ON rs.platform_listing_id = pl.id
+            WHERE pl.platform = 'wechat_mini'
+              AND rs.snapshot_date = %s
+              AND rs.rank_position <= 100
+            GROUP BY g.id, g.name_zh, g.name_en
+            ORDER BY chart_count DESC, best_rank ASC
+            LIMIT %s
+        ),
+        sentiment AS (
+            SELECT pl.game_id,
+                   COUNT(*) FILTER (WHERE r.sentiment = 'positive') AS pos_cnt,
+                   COUNT(*) FILTER (WHERE r.sentiment = 'negative') AS neg_cnt,
+                   COUNT(*) FILTER (WHERE r.sentiment = 'neutral')  AS neu_cnt,
+                   COUNT(*) AS total_cnt
+            FROM reviews r
+            JOIN platform_listings pl ON r.platform_listing_id = pl.id
+            WHERE pl.game_id IN (SELECT game_id FROM focus_games)
+            GROUP BY pl.game_id
+        ),
+        pos_topics AS (
+            SELECT rts.game_id,
+                   ARRAY_AGG(rts.topic ORDER BY rts.review_count DESC)
+                     FILTER (WHERE rts.sentiment = 'positive')        AS pos_topics
+            FROM review_topic_summaries rts
+            WHERE rts.game_id IN (SELECT game_id FROM focus_games)
+            GROUP BY rts.game_id
+        ),
+        neg_topics AS (
+            SELECT rts.game_id,
+                   ARRAY_AGG(rts.topic ORDER BY rts.review_count DESC)
+                     FILTER (WHERE rts.sentiment = 'negative')        AS neg_topics
+            FROM review_topic_summaries rts
+            WHERE rts.game_id IN (SELECT game_id FROM focus_games)
+            GROUP BY rts.game_id
+        )
+        SELECT f.game_id,
+               f.name,
+               f.chart_count,
+               f.best_rank,
+               COALESCE(s.pos_cnt, 0),
+               COALESCE(s.neg_cnt, 0),
+               COALESCE(s.neu_cnt, 0),
+               COALESCE(s.total_cnt, 0),
+               COALESCE(p.pos_topics[1:3], '{}'::text[]),
+               COALESCE(n.neg_topics[1:3], '{}'::text[])
+        FROM focus_games f
+        LEFT JOIN sentiment s ON s.game_id = f.game_id
+        LEFT JOIN pos_topics p ON p.game_id = f.game_id
+        LEFT JOIN neg_topics n ON n.game_id = f.game_id
+        WHERE COALESCE(s.total_cnt, 0) > 0
+        ORDER BY COALESCE(s.total_cnt, 0) DESC
+        """,
+        (today, limit_games),
+    ).fetchall()
+    return [
+        {
+            "game_id": int(r[0]),
+            "name": r[1],
+            "chart_count": int(r[2]),
+            "best_rank": int(r[3]),
+            "positive": int(r[4]),
+            "negative": int(r[5]),
+            "neutral": int(r[6]),
+            "total_reviews": int(r[7]),
+            "pos_topics": list(r[8] or []),
+            "neg_topics": list(r[9] or []),
+        }
+        for r in rows
+    ]
+
+
+def _get_hook_signals(
+    conn: psycopg.Connection, today: date, limit_games: int = 12
+) -> list[dict[str, Any]]:
+    """For the same top cross-chart focus games, pull the top 3 hook
+    phrases by lifetime view_count from social_content_samples.
+    Empty if hook_extraction / scrape_social_depth haven't run yet.
+    """
+    rows = conn.execute(
+        """
+        WITH focus_games AS (
+            SELECT g.id AS game_id,
+                   COALESCE(g.name_zh, g.name_en, 'Unknown') AS name,
+                   MIN(rs.rank_position) AS best_rank
+            FROM games g
+            JOIN platform_listings pl ON pl.game_id = g.id
+            JOIN ranking_snapshots rs ON rs.platform_listing_id = pl.id
+            WHERE pl.platform = 'wechat_mini'
+              AND rs.snapshot_date = %s
+              AND rs.rank_position <= 100
+            GROUP BY g.id, g.name_zh, g.name_en
+            ORDER BY COUNT(DISTINCT rs.chart_type) DESC, best_rank ASC
+            LIMIT %s
+        ),
+        ranked_hooks AS (
+            SELECT s.game_id,
+                   s.hook_phrase,
+                   s.view_count,
+                   s.platform,
+                   ROW_NUMBER() OVER (
+                       PARTITION BY s.game_id
+                       ORDER BY s.view_count DESC
+                   ) AS rn
+            FROM social_content_samples s
+            WHERE s.game_id IN (SELECT game_id FROM focus_games)
+              AND s.hook_phrase IS NOT NULL
+              AND LENGTH(s.hook_phrase) > 0
+        )
+        SELECT f.game_id,
+               f.name,
+               f.best_rank,
+               COALESCE(
+                   JSON_AGG(
+                       JSON_BUILD_OBJECT(
+                           'hook', rh.hook_phrase,
+                           'views', rh.view_count,
+                           'platform', rh.platform
+                       )
+                       ORDER BY rh.rn
+                   ) FILTER (WHERE rh.hook_phrase IS NOT NULL),
+                   '[]'::json
+               ) AS hooks
+        FROM focus_games f
+        LEFT JOIN ranked_hooks rh
+          ON rh.game_id = f.game_id AND rh.rn <= 3
+        GROUP BY f.game_id, f.name, f.best_rank
+        HAVING COUNT(rh.hook_phrase) > 0
+        ORDER BY f.best_rank ASC
+        """,
+        (today, limit_games),
+    ).fetchall()
+    return [
+        {
+            "game_id": int(r[0]),
+            "name": r[1],
+            "best_rank": int(r[2]),
+            "hooks": [
+                {
+                    "hook": h["hook"],
+                    "views": int(h["views"] or 0),
+                    "platform": h["platform"],
+                }
+                for h in (r[3] or [])
+            ],
+        }
+        for r in rows
+    ]
+
+
+def _get_market_history(
+    conn: psycopg.Connection, today: date, window_days: int = 7
+) -> dict[str, Any]:
+    """Aggregate 7-day market drift at the *chart* level — complements
+    _get_momentum which works at the per-game level.
+
+    Returns, for each chart_type:
+      - games_today (distinct games in top-50)
+      - games_then  (distinct games in top-50, 7d ago)
+      - new_entrants (today ∖ then)
+      - stable_cohort (today ∩ then)
+
+    And overall top genre share today vs 7d ago.
+    """
+    past_day = today - timedelta(days=window_days)
+    churn_rows = conn.execute(
+        """
+        WITH today_set AS (
+            SELECT rs.chart_type, rs.platform_listing_id
+            FROM ranking_snapshots rs
+            JOIN platform_listings pl ON rs.platform_listing_id = pl.id
+            WHERE pl.platform = 'wechat_mini'
+              AND rs.snapshot_date = %s
+              AND rs.rank_position <= 50
+        ),
+        past_set AS (
+            SELECT rs.chart_type, rs.platform_listing_id
+            FROM ranking_snapshots rs
+            JOIN platform_listings pl ON rs.platform_listing_id = pl.id
+            WHERE pl.platform = 'wechat_mini'
+              AND rs.snapshot_date = %s
+              AND rs.rank_position <= 50
+        )
+        SELECT COALESCE(t.chart_type, p.chart_type) AS chart_type,
+               COUNT(DISTINCT t.platform_listing_id) AS games_today,
+               COUNT(DISTINCT p.platform_listing_id) AS games_then,
+               COUNT(DISTINCT t.platform_listing_id)
+                 FILTER (
+                     WHERE p.platform_listing_id IS NULL
+                       AND t.platform_listing_id IS NOT NULL
+                 ) AS new_entrants,
+               COUNT(DISTINCT t.platform_listing_id)
+                 FILTER (
+                     WHERE p.platform_listing_id IS NOT NULL
+                       AND t.platform_listing_id IS NOT NULL
+                 ) AS stable_cohort
+        FROM today_set t
+        FULL OUTER JOIN past_set p
+          ON p.chart_type = t.chart_type
+         AND p.platform_listing_id = t.platform_listing_id
+        GROUP BY COALESCE(t.chart_type, p.chart_type)
+        ORDER BY COALESCE(t.chart_type, p.chart_type)
+        """,
+        (today, past_day),
+    ).fetchall()
+
+    def _top_genre(snap_date: date) -> tuple[str | None, int, int]:
+        row = conn.execute(
+            """
+            SELECT g.genre,
+                   COUNT(DISTINCT g.id) AS n,
+                   (SELECT COUNT(DISTINCT g2.id)
+                    FROM games g2
+                    JOIN platform_listings pl2 ON g2.id = pl2.game_id
+                    JOIN ranking_snapshots rs2 ON rs2.platform_listing_id = pl2.id
+                    WHERE pl2.platform = 'wechat_mini'
+                      AND rs2.snapshot_date = %s
+                      AND rs2.rank_position <= 50
+                      AND g2.genre IS NOT NULL) AS total
+            FROM games g
+            JOIN platform_listings pl ON g.id = pl.game_id
+            JOIN ranking_snapshots rs ON rs.platform_listing_id = pl.id
+            WHERE pl.platform = 'wechat_mini'
+              AND rs.snapshot_date = %s
+              AND rs.rank_position <= 50
+              AND g.genre IS NOT NULL
+            GROUP BY g.genre
+            ORDER BY n DESC
+            LIMIT 1
+            """,
+            (snap_date, snap_date),
+        ).fetchone()
+        if not row:
+            return (None, 0, 0)
+        return (row[0], int(row[1]), int(row[2] or 0))
+
+    today_genre = _top_genre(today)
+    past_genre = _top_genre(past_day)
+
+    return {
+        "window_days": window_days,
+        "today": today.isoformat(),
+        "past": past_day.isoformat(),
+        "churn": [
+            {
+                "chart_type": r[0],
+                "games_today": int(r[1] or 0),
+                "games_then": int(r[2] or 0),
+                "new_entrants": int(r[3] or 0),
+                "stable_cohort": int(r[4] or 0),
+            }
+            for r in churn_rows
+        ],
+        "top_genre_today": {
+            "genre": today_genre[0],
+            "count": today_genre[1],
+            "total": today_genre[2],
+        },
+        "top_genre_past": {
+            "genre": past_genre[0],
+            "count": past_genre[1],
+            "total": past_genre[2],
+        },
+    }
+
+
 # ============================================================
 # Block formatters (SQL rows → prompt-friendly text)
 # ============================================================
@@ -448,6 +737,94 @@ def _fmt_iaa_top(rows: list[dict[str, Any]]) -> str:
     return "\n".join(lines)
 
 
+def _fmt_review_voice(rows: list[dict[str, Any]]) -> str:
+    if not rows:
+        return (
+            "（暂无评论样本 — reviews / review_topic_summaries 未积累，"
+            "本次报告不得引用任何 '玩家反馈……' 表述）"
+        )
+    lines = []
+    for r in rows:
+        total = r["total_reviews"]
+        pos_ratio = (r["positive"] / total * 100) if total else 0
+        neg_ratio = (r["negative"] / total * 100) if total else 0
+        pos_topics = "、".join(r["pos_topics"]) if r["pos_topics"] else "-"
+        neg_topics = "、".join(r["neg_topics"]) if r["neg_topics"] else "-"
+        lines.append(
+            f"- game:{r['game_id']} 《{r['name']}》 "
+            f"评论={total} 正面={r['positive']}({pos_ratio:.0f}%) "
+            f"负面={r['negative']}({neg_ratio:.0f}%) "
+            f"正面话题=[{pos_topics}] 负面话题=[{neg_topics}]"
+        )
+    return "\n".join(lines)
+
+
+def _fmt_hook_signals(rows: list[dict[str, Any]]) -> str:
+    if not rows:
+        return (
+            "（暂无 hook 素材 — social_content_samples.hook_phrase 为空，"
+            "本次报告不得推断 '传播钩子 / 买量素材方向'）"
+        )
+    lines = []
+    for r in rows:
+        hook_strs = []
+        for h in r["hooks"][:3]:
+            views = h["views"]
+            if views >= 10000:
+                view_str = f"{views / 10000:.1f}w"
+            else:
+                view_str = str(views)
+            hook_strs.append(f'"{h["hook"]}"({h["platform"]},{view_str})')
+        hooks_joined = " / ".join(hook_strs) if hook_strs else "-"
+        lines.append(
+            f"- game:{r['game_id']} 《{r['name']}》 best_rank=#{r['best_rank']} "
+            f"top_hooks: {hooks_joined}"
+        )
+    return "\n".join(lines)
+
+
+def _fmt_market_history(data: dict[str, Any]) -> str:
+    churn = data.get("churn") or []
+    if not churn:
+        return (
+            "（无 7 天前 ranking_snapshots 数据 — 历史对照缺失，"
+            "市场趋势只能按单日 snapshot 判断，你必须把这点放进 data_blind_spots）"
+        )
+    has_history = any(c["games_then"] > 0 for c in churn)
+    if not has_history:
+        return (
+            "（7 天前 ranking_snapshots 均为空 — 系统可能刚部署不满 7 天，"
+            "无法做市场漂移对照，data_blind_spots 必须列出这一点）"
+        )
+    lines = [
+        f"对照窗口: {data['past']} → {data['today']} ({data['window_days']} 天)"
+    ]
+    for c in churn:
+        if c["games_then"] == 0 and c["games_today"] == 0:
+            continue
+        churn_rate = (
+            (c["new_entrants"] / c["games_today"] * 100)
+            if c["games_today"]
+            else 0
+        )
+        lines.append(
+            f"- {c['chart_type']}: 今日 {c['games_today']} 款 / "
+            f"7 天前 {c['games_then']} 款 · "
+            f"新进 {c['new_entrants']} 款 ({churn_rate:.0f}% 换血率) · "
+            f"留存 {c['stable_cohort']} 款"
+        )
+    tg = data.get("top_genre_today") or {}
+    pg = data.get("top_genre_past") or {}
+    if tg.get("genre") or pg.get("genre"):
+        lines.append(
+            f"头部品类漂移: 今日 {tg.get('genre') or '-'} "
+            f"({tg.get('count', 0)}/{tg.get('total', 0)}) "
+            f"← 7 天前 {pg.get('genre') or '-'} "
+            f"({pg.get('count', 0)}/{pg.get('total', 0)})"
+        )
+    return "\n".join(lines)
+
+
 # ============================================================
 # Generator
 # ============================================================
@@ -473,6 +850,9 @@ class WechatIntelligenceGenerator:
             "genre": _get_genre_distribution(conn, today),
             "resonance": _get_social_resonance(conn, today),
             "iaa_top": _get_iaa_top(conn, today),
+            "review_voice": _get_review_voice(conn, today),
+            "hook_signals": _get_hook_signals(conn, today),
+            "market_history": _get_market_history(conn, today),
         }
 
     async def generate(
@@ -507,6 +887,9 @@ class WechatIntelligenceGenerator:
                 genre_block=_fmt_genre(data["genre"]),
                 resonance_block=_fmt_resonance(data["resonance"]),
                 iaa_top_block=_fmt_iaa_top(data["iaa_top"]),
+                review_voice_block=_fmt_review_voice(data["review_voice"]),
+                hook_signals_block=_fmt_hook_signals(data["hook_signals"]),
+                market_history_block=_fmt_market_history(data["market_history"]),
             )
 
             model = get_model_for_task("wechat_intelligence")
@@ -543,6 +926,7 @@ class WechatIntelligenceGenerator:
                 len(report.top_signal_games)
                 + len(report.market_opportunities)
                 + len(report.red_flags)
+                + len(report.data_blind_spots)
                 + sum(len(p.inspirations) for p in report.project_recommendations)
             )
 
@@ -584,7 +968,8 @@ class WechatIntelligenceGenerator:
             f"signal_games={len(report.top_signal_games)} "
             f"opportunities={len(report.market_opportunities)} "
             f"red_flags={len(report.red_flags)} "
-            f"recs={len(report.project_recommendations)}"
+            f"recs={len(report.project_recommendations)} "
+            f"blind_spots={len(report.data_blind_spots)}"
         )
         return {
             "date": scope,

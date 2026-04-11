@@ -321,6 +321,11 @@ type IntelPayload = {
     estimated_dev_weeks: number;
     confidence: number;
   }>;
+  data_blind_spots?: Array<{
+    signal: string;
+    reason: string;
+    impact: string;
+  }>;
 };
 
 const PULSE_LABELS: Record<string, { label: string; color: string }> = {
@@ -464,7 +469,7 @@ function WechatIntelSection({
               智库洞察
             </h2>
             <p className="text-sm text-indigo-700 mt-1">
-              全球顶尖微信小游戏 IAA 智库分析 · 每日 13:00 HKT 自动生成
+              基于当日榜单跨维度信号的 Opus 合成简报 · 每日 13:00 HKT 自动生成
             </p>
             <p className="text-xs text-gray-500 mt-3">
               暂无今日简报 — 手动触发{" "}
@@ -676,6 +681,35 @@ function WechatIntelSection({
             ))}
           </div>
         </div>
+      )}
+
+      {/* Data blind spots — honest disclosure of what this report did NOT use */}
+      {payload.data_blind_spots && payload.data_blind_spots.length > 0 && (
+        <details className="bg-gray-50 rounded-lg border border-gray-200 group">
+          <summary className="cursor-pointer px-4 py-2.5 text-xs font-semibold text-gray-600 uppercase tracking-wide hover:bg-gray-100 transition-colors">
+            数据盲区 · 本次报告未使用的信号 ({payload.data_blind_spots.length})
+            <span className="ml-1 text-gray-400 group-open:hidden">▸</span>
+            <span className="ml-1 text-gray-400 hidden group-open:inline">▾</span>
+          </summary>
+          <div className="px-4 pb-4 pt-1 space-y-2">
+            <p className="text-xs text-gray-500 italic">
+              智库只基于本次输入信号说话。下列维度因数据缺失 / 样本过少 / 未接入而未参与判断 —
+              读者应把这些作为置信度上限的参考。
+            </p>
+            <ul className="space-y-2">
+              {payload.data_blind_spots.map((b, i) => (
+                <li
+                  key={i}
+                  className="text-xs bg-white rounded p-2.5 border border-gray-100"
+                >
+                  <p className="font-medium text-gray-700">⊘ {b.signal}</p>
+                  <p className="text-gray-500 mt-0.5 pl-3">原因:{b.reason}</p>
+                  <p className="text-gray-500 mt-0.5 pl-3">影响:{b.impact}</p>
+                </li>
+              ))}
+            </ul>
+          </div>
+        </details>
       )}
     </section>
   );
