@@ -1,7 +1,7 @@
 services:
-  # PostgreSQL database
+  # PostgreSQL database (pgvector image = postgres:16 + pgvector extension prebuilt)
   db:
-    image: postgres:16-alpine
+    image: pgvector/pgvector:pg16
     restart: unless-stopped
     environment:
       POSTGRES_USER: dreambig
