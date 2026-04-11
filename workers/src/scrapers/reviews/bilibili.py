@@ -60,20 +60,32 @@ _BV_XOR = 177_451_812
 _BV_ADD = 8_728_348_608
 
 
-def _bvid_to_aid_local(bvid: str) -> int | None:
-    """Local BV→AV converter for classic 12-char BVIDs ("BV1xxxxxxxxxx").
+import re as _re
+_BV_PATTERN = _re.compile(r"^BV1[a-zA-Z0-9]{9}")
 
-    Returns None for malformed inputs; never hits the network.
+
+def _bvid_to_aid_local(bvid: str) -> int | None:
+    """Local BV→AV converter for modern 12-char BVIDs ("BV1xxxxxxxxxx").
+
+    Accepts inputs ≥ 12 chars as long as the first 12 match ``BV1`` + 9
+    alphanumerics; this lets us survive BVIDs returned by DOM scraping
+    that may include trailing fragments or query chars the regex didn't
+    fully strip. Returns None for anything we can't decode.
     """
-    if not bvid or not bvid.startswith("BV") or len(bvid) != 12:
+    if not bvid:
         return None
+    m = _BV_PATTERN.match(bvid.strip())
+    if not m:
+        return None
+    core = m.group(0)  # exactly 12 chars "BV1xxxxxxxxx"
     try:
         r = 0
         for i in range(6):
-            ch = bvid[_BV_POS[i]]
+            ch = core[_BV_POS[i]]
             r += _BV_TABLE_MAP[ch] * (58 ** i)
-        return (r - _BV_ADD) ^ _BV_XOR
-    except KeyError:
+        aid = (r - _BV_ADD) ^ _BV_XOR
+        return aid if aid > 0 else None
+    except (KeyError, IndexError):
         return None
     except Exception:
         return None
@@ -407,7 +419,10 @@ class BilibiliReviewScraper(BaseReviewScraper):
                     // Primary: any anchor linking to /video/BVxxx
                     const anchors = document.querySelectorAll('a[href*="/video/BV"]');
                     for (const a of anchors) {
-                        const m = a.href.match(/\/video\/(BV[0-9A-Za-z]+)/);
+                        // Capture EXACTLY 12 chars (BV1 + 9 alphanumerics).
+                        // Previous loose `BV[\w]+` captured underscores /
+                        // trailing fragments and broke local BV→AV decoding.
+                        const m = a.href.match(/\/video\/(BV1[a-zA-Z0-9]{9})/);
                         if (!m) continue;
                         const bvid = m[1];
                         if (seen.has(bvid)) continue;
@@ -449,20 +464,36 @@ class BilibiliReviewScraper(BaseReviewScraper):
         directly, so we compute it locally for free.
         """
         resolved: list[dict[str, Any]] = []
+        failed_samples: list[str] = []
         for v in dom_videos:
-            aid = _bvid_to_aid_local(v["bvid"])
+            # Sanitize: strip whitespace / query / fragment / trailing /
+            raw = str(v.get("bvid") or "")
+            clean = raw.strip().split("/")[0].split("?")[0].split("#")[0]
+            aid = _bvid_to_aid_local(clean)
             if not aid or aid <= 0:
+                if len(failed_samples) < 3:
+                    failed_samples.append(raw[:30])
                 continue
             resolved.append(
                 {
                     "aid": aid,
-                    "bvid": v["bvid"],
+                    "bvid": clean[:12],  # normalize to canonical 12-char form
                     "title": v.get("title", ""),
                     "play": 0,
                 }
             )
             if len(resolved) >= limit:
                 break
+        if not resolved and failed_samples:
+            logger.warning(
+                f"[bilibili_review] BV→AV conversion failed for all inputs. "
+                f"Sample failures: {failed_samples!r}"
+            )
+        elif len(resolved) < limit and failed_samples:
+            logger.debug(
+                f"[bilibili_review] BV→AV partial ({len(resolved)}/{len(dom_videos)}); "
+                f"sample failures: {failed_samples!r}"
+            )
         return resolved
 
     async def _bvid_to_aid(self, bvid: str) -> int | None:

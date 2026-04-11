@@ -265,6 +265,72 @@ async function getGenreWeeklyReports() {
   }
 }
 
+type WechatIntelReport = {
+  id: number;
+  generatedAt: Date;
+  title: string | null;
+  summary: string | null;
+  payload: unknown;
+};
+
+async function getLatestWechatIntel(): Promise<WechatIntelReport | null> {
+  try {
+    const row = await prisma.generatedReport.findFirst({
+      where: { reportType: "wechat_intelligence" },
+      orderBy: { generatedAt: "desc" },
+    });
+    return row;
+  } catch (e) {
+    console.error("[dashboard] getLatestWechatIntel failed:", e);
+    return null;
+  }
+}
+
+type IntelPayload = {
+  headline?: string;
+  market_pulse?: string;
+  market_snapshot?: string;
+  overall_confidence?: number;
+  top_signal_games?: Array<{
+    game_id: number;
+    name: string;
+    signal_strength: string;
+    iaa_angle: string;
+    evidence_refs?: string[];
+  }>;
+  market_opportunities?: Array<{
+    opportunity: string;
+    reasoning: string;
+    why_now: string;
+    risk_factors?: string[];
+    confidence: number;
+  }>;
+  red_flags?: Array<{
+    pattern: string;
+    affected_games?: number[];
+    implication: string;
+  }>;
+  project_recommendations?: Array<{
+    title: string;
+    genre: string;
+    core_mechanic: string;
+    inspirations: number[];
+    iaa_placement_hint: string;
+    rationale: string;
+    target_audience: string;
+    estimated_dev_weeks: number;
+    confidence: number;
+  }>;
+};
+
+const PULSE_LABELS: Record<string, { label: string; color: string }> = {
+  hot: { label: "🔥 过热", color: "bg-red-100 text-red-700" },
+  warming: { label: "⬆️ 升温", color: "bg-orange-100 text-orange-700" },
+  stable: { label: "⏸ 稳态", color: "bg-blue-100 text-blue-700" },
+  cooling: { label: "⬇️ 降温", color: "bg-cyan-100 text-cyan-700" },
+  cold: { label: "🧊 清冷", color: "bg-gray-100 text-gray-600" },
+};
+
 async function getRecentAlerts(workspaceId: string) {
   try {
     return await prisma.alertEvent.findMany({
@@ -379,6 +445,242 @@ function StatCard({ label, value }: { label: string; value: number }) {
   );
 }
 
+function WechatIntelSection({
+  reportId,
+  generatedAt,
+  payload,
+}: {
+  reportId: number | null;
+  generatedAt: Date | null;
+  payload: IntelPayload | null;
+}) {
+  if (!payload) {
+    return (
+      <section className="bg-gradient-to-br from-indigo-50 to-purple-50 rounded-lg shadow p-6 border border-indigo-100">
+        <div className="flex items-start gap-3">
+          <span className="text-2xl">🧠</span>
+          <div className="flex-1">
+            <h2 className="text-lg font-semibold text-indigo-900">
+              智库洞察
+            </h2>
+            <p className="text-sm text-indigo-700 mt-1">
+              全球顶尖微信小游戏 IAA 智库分析 · 每日 13:00 HKT 自动生成
+            </p>
+            <p className="text-xs text-gray-500 mt-3">
+              暂无今日简报 — 手动触发{" "}
+              <code className="bg-white px-1.5 py-0.5 rounded border">
+                python -m src.worker wechat_intelligence
+              </code>
+            </p>
+          </div>
+        </div>
+      </section>
+    );
+  }
+
+  const pulse = PULSE_LABELS[payload.market_pulse || "stable"] || PULSE_LABELS.stable;
+  const confidencePct = Math.round((payload.overall_confidence ?? 0) * 100);
+
+  return (
+    <section className="bg-gradient-to-br from-indigo-50 via-white to-purple-50 rounded-lg shadow-lg p-6 border border-indigo-100 space-y-5">
+      {/* Header */}
+      <div className="flex items-start gap-3">
+        <span className="text-3xl">🧠</span>
+        <div className="flex-1 min-w-0">
+          <div className="flex items-center gap-2 flex-wrap">
+            <h2 className="text-xl font-bold text-indigo-900">智库洞察</h2>
+            <span
+              className={`text-xs px-2 py-0.5 rounded-full font-medium ${pulse.color}`}
+            >
+              {pulse.label}
+            </span>
+            <span className="text-xs text-gray-400">
+              置信度 {confidencePct}%
+            </span>
+            {generatedAt && (
+              <span className="text-xs text-gray-400">
+                · {generatedAt.toLocaleString("zh-CN", { hour: "2-digit", minute: "2-digit", month: "2-digit", day: "2-digit" })}
+              </span>
+            )}
+          </div>
+          {payload.headline && (
+            <p className="text-base font-semibold text-gray-800 mt-1.5">
+              {payload.headline}
+            </p>
+          )}
+        </div>
+        {reportId && (
+          <Link
+            href={`/reports/${reportId}`}
+            className="text-xs text-indigo-600 hover:text-indigo-800 hover:underline whitespace-nowrap"
+          >
+            完整报告 →
+          </Link>
+        )}
+      </div>
+
+      {/* Market snapshot */}
+      {payload.market_snapshot && (
+        <div className="bg-white rounded-lg p-4 border-l-4 border-indigo-400">
+          <p className="text-xs font-semibold text-indigo-700 uppercase tracking-wide mb-1.5">
+            当日市场快照
+          </p>
+          <p className="text-sm text-gray-700 leading-relaxed">
+            {payload.market_snapshot}
+          </p>
+        </div>
+      )}
+
+      {/* Project recommendations — the decision-grade payload */}
+      {payload.project_recommendations && payload.project_recommendations.length > 0 && (
+        <div>
+          <p className="text-xs font-semibold text-indigo-700 uppercase tracking-wide mb-2">
+            立项建议 · 智库结论
+          </p>
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+            {payload.project_recommendations.map((rec, i) => (
+              <div
+                key={i}
+                className="bg-white rounded-lg p-4 shadow-sm border border-indigo-100"
+              >
+                <div className="flex items-start justify-between mb-2">
+                  <h4 className="font-semibold text-sm text-gray-800">
+                    {rec.title}
+                  </h4>
+                  <span className="text-xs text-indigo-600 font-mono whitespace-nowrap">
+                    {Math.round((rec.confidence ?? 0) * 100)}%
+                  </span>
+                </div>
+                <div className="space-y-1.5 text-xs text-gray-600">
+                  <p>
+                    <span className="text-gray-400">品类:</span> {rec.genre}
+                  </p>
+                  <p>
+                    <span className="text-gray-400">机制:</span> {rec.core_mechanic}
+                  </p>
+                  <p>
+                    <span className="text-gray-400">变现:</span>{" "}
+                    {rec.iaa_placement_hint}
+                  </p>
+                  <p>
+                    <span className="text-gray-400">目标玩家:</span>{" "}
+                    {rec.target_audience}
+                  </p>
+                  <p>
+                    <span className="text-gray-400">估时:</span>{" "}
+                    {rec.estimated_dev_weeks} 周
+                  </p>
+                </div>
+                <p className="text-xs text-gray-700 mt-2 pt-2 border-t border-gray-100 leading-relaxed">
+                  {rec.rationale}
+                </p>
+                {rec.inspirations && rec.inspirations.length > 0 && (
+                  <div className="mt-2 flex items-center gap-1 flex-wrap">
+                    <span className="text-xs text-gray-400">标的:</span>
+                    {rec.inspirations.slice(0, 4).map((gid) => (
+                      <Link
+                        key={gid}
+                        href={`/games/${gid}`}
+                        className="text-xs text-indigo-600 hover:underline"
+                      >
+                        #{gid}
+                      </Link>
+                    ))}
+                  </div>
+                )}
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* Opportunities + red flags side-by-side */}
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+        {payload.market_opportunities && payload.market_opportunities.length > 0 && (
+          <div className="bg-white rounded-lg p-4 border-l-4 border-green-400">
+            <p className="text-xs font-semibold text-green-700 uppercase tracking-wide mb-2">
+              市场机会 ({payload.market_opportunities.length})
+            </p>
+            <ul className="space-y-2.5">
+              {payload.market_opportunities.map((o, i) => (
+                <li key={i} className="text-sm">
+                  <p className="font-medium text-gray-800">• {o.opportunity}</p>
+                  <p className="text-xs text-gray-600 mt-0.5 pl-3">
+                    {o.reasoning}
+                  </p>
+                  <p className="text-xs text-green-700 mt-0.5 pl-3 italic">
+                    何时:{o.why_now}
+                  </p>
+                </li>
+              ))}
+            </ul>
+          </div>
+        )}
+
+        {payload.red_flags && payload.red_flags.length > 0 && (
+          <div className="bg-white rounded-lg p-4 border-l-4 border-red-400">
+            <p className="text-xs font-semibold text-red-700 uppercase tracking-wide mb-2">
+              红灯预警 ({payload.red_flags.length})
+            </p>
+            <ul className="space-y-2.5">
+              {payload.red_flags.map((f, i) => (
+                <li key={i} className="text-sm">
+                  <p className="font-medium text-gray-800">⚠ {f.pattern}</p>
+                  <p className="text-xs text-gray-600 mt-0.5 pl-3">
+                    {f.implication}
+                  </p>
+                  {f.affected_games && f.affected_games.length > 0 && (
+                    <p className="text-xs text-gray-400 mt-0.5 pl-3">
+                      涉及游戏:{" "}
+                      {f.affected_games.slice(0, 5).map((gid, idx) => (
+                        <span key={gid}>
+                          <Link
+                            href={`/games/${gid}`}
+                            className="text-red-600 hover:underline"
+                          >
+                            #{gid}
+                          </Link>
+                          {idx < Math.min(4, f.affected_games!.length - 1)
+                            ? ", "
+                            : ""}
+                        </span>
+                      ))}
+                    </p>
+                  )}
+                </li>
+              ))}
+            </ul>
+          </div>
+        )}
+      </div>
+
+      {/* Top signal games */}
+      {payload.top_signal_games && payload.top_signal_games.length > 0 && (
+        <div>
+          <p className="text-xs font-semibold text-indigo-700 uppercase tracking-wide mb-2">
+            信号最强游戏 ({payload.top_signal_games.length})
+          </p>
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
+            {payload.top_signal_games.slice(0, 6).map((g) => (
+              <Link
+                key={g.game_id}
+                href={`/games/${g.game_id}`}
+                className="bg-white rounded p-3 text-xs hover:shadow-md transition-shadow border border-gray-100"
+              >
+                <p className="font-semibold text-gray-800 text-sm mb-1">
+                  {g.name}
+                </p>
+                <p className="text-gray-600">{g.signal_strength}</p>
+                <p className="text-indigo-600 mt-1 italic">{g.iaa_angle}</p>
+              </Link>
+            ))}
+          </div>
+        </div>
+      )}
+    </section>
+  );
+}
+
 // ============================================================
 // Page
 // ============================================================
@@ -402,6 +704,7 @@ export default async function WechatDashboardPage() {
     socialBuzz,
     weeklyReports,
     recentAlerts,
+    latestIntel,
   ] = await Promise.all([
     getStatCards(),
     getChartTop10("hot"),
@@ -419,6 +722,7 @@ export default async function WechatDashboardPage() {
     getSocialBuzz(),
     getGenreWeeklyReports(),
     getRecentAlerts(workspaceId),
+    getLatestWechatIntel(),
   ]);
 
   // Parallel array aligned with ALL_CHARTS order
@@ -434,6 +738,18 @@ export default async function WechatDashboardPage() {
     tagAdventure,
     tagSingleplayer,
   ];
+
+  const intelPayload: IntelPayload | null = (() => {
+    if (!latestIntel) return null;
+    try {
+      const raw = latestIntel.payload as unknown;
+      return typeof raw === "string"
+        ? (JSON.parse(raw) as IntelPayload)
+        : (raw as IntelPayload);
+    } catch {
+      return null;
+    }
+  })();
 
   return (
     <div className="space-y-8">
@@ -458,6 +774,13 @@ export default async function WechatDashboardPage() {
         <StatCard label="新游榜条目" value={stats.newEntriesToday} />
         <StatCard label="高潜力 (≥60)" value={stats.highPotential} />
       </section>
+
+      {/* Section: 智库洞察 (Think-tank briefing — Opus-generated, daily) */}
+      <WechatIntelSection
+        reportId={latestIntel?.id ?? null}
+        generatedAt={latestIntel?.generatedAt ?? null}
+        payload={intelPayload}
+      />
 
       {/* Section 1: all 10 ranking charts (top 10 preview each, click 查看全部
           to see full paginated list up to 400 rows at /charts/<key>) */}

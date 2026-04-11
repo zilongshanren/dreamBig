@@ -709,6 +709,22 @@ def run_game_name_translate(limit: int = 300):
     return _run(DB_URL, limit=limit)
 
 
+def run_wechat_intelligence(target_date: str | None = None) -> dict | None:
+    """Generate today's WeChat mini-game IAA think-tank briefing.
+
+    Pulls 6 orthogonal signals from ranking_snapshots / potential_scores /
+    social_signals / reviews, feeds them to Opus via a think-tank prompt,
+    and persists a decision-grade Chinese briefing into generated_reports
+    with report_type='wechat_intelligence'.
+    """
+    from datetime import date as _date
+    from src.processors.wechat_intelligence import (
+        run_wechat_intelligence as _run,
+    )
+    parsed = _date.fromisoformat(target_date) if target_date else None
+    return _run(DB_URL, target_date=parsed)
+
+
 def run_api_key_check() -> dict:
     """End-to-end probe for YouTube / TikHub / Bilibili review paths.
 
@@ -764,7 +780,9 @@ def run_api_key_check() -> dict:
     report["youtube"] = yt
 
     # ------------------------------------------------------------------
-    # TikHub (Douyin search)
+    # TikHub (Douyin search) — probe multiple candidate endpoints because
+    # TikHub has renamed their routes multiple times. The one that returns
+    # 200 is the one the scraper should point at.
     # ------------------------------------------------------------------
     tk_key = _os.environ.get("TIKHUB_API_KEY", "").strip()
     tk: dict[str, object] = {"configured": bool(tk_key)}
@@ -772,31 +790,75 @@ def run_api_key_check() -> dict:
         tk["verdict"] = "MISSING"
         tk["detail"] = "TIKHUB_API_KEY env var is empty"
     else:
-        try:
-            resp = _httpx.get(
-                "https://api.tikhub.io/api/v1/douyin/web/fetch_general_search",
-                params={"keyword": "小游戏", "offset": 0, "count": 3},
-                headers={"Authorization": f"Bearer {tk_key}"},
-                timeout=15,
-            )
-            tk["http"] = resp.status_code
-            if resp.status_code == 200:
-                data = resp.json()
-                # TikHub response shape varies; look for data.data[] or items[]
-                inner = (
-                    (data.get("data") or {}).get("data")
-                    or data.get("items")
-                    or []
+        # Candidate endpoints ordered by likelihood based on TikHub's public
+        # docs + recent route changes. First endpoint to return HTTP 200 with
+        # code == 200 wins.
+        candidates: list[dict[str, object]] = [
+            {
+                "path": "/api/v1/douyin/app/v3/fetch_general_search_result",
+                "params": {"keyword": "小游戏", "count": 3, "offset": 0, "sort_type": 0, "publish_time": 0},
+            },
+            {
+                "path": "/api/v1/douyin/web/fetch_general_search_result",
+                "params": {"keyword": "小游戏", "count": 3, "offset": 0},
+            },
+            {
+                "path": "/api/v1/douyin/web/fetch_general_search",
+                "params": {"keyword": "小游戏", "count": 3, "offset": 0},
+            },
+            {
+                "path": "/api/v1/douyin/web/fetch_video_search_result",
+                "params": {"keyword": "小游戏", "count": 3, "offset": 0},
+            },
+            {
+                "path": "/api/v1/tikhub/user/get_user_info",
+                "params": {},
+            },
+            # Minimal health probe — if nothing else works, at least
+            # confirm the key is valid by hitting the rate-limit endpoint.
+            {
+                "path": "/api/v1/tikhub/daily/rate_limit",
+                "params": {},
+            },
+        ]
+        attempts: list[dict[str, object]] = []
+        winning_endpoint: str | None = None
+        for cand in candidates:
+            path = cand["path"]
+            try:
+                resp = _httpx.get(
+                    f"https://api.tikhub.io{path}",
+                    params=cand["params"],
+                    headers={"Authorization": f"Bearer {tk_key}"},
+                    timeout=12,
                 )
-                tk["verdict"] = "OK" if inner else "EMPTY"
-                tk["result_count"] = len(inner) if isinstance(inner, list) else 0
-                tk["api_code"] = data.get("code") or data.get("status_code")
-            else:
-                tk["verdict"] = "HTTP_ERROR"
-                tk["detail"] = resp.text[:300]
-        except Exception as e:
-            tk["verdict"] = "EXCEPTION"
-            tk["detail"] = str(e)[:300]
+                status = resp.status_code
+                snippet = resp.text[:150] if resp.text else ""
+                attempts.append({"path": path, "http": status, "body": snippet})
+                if status == 200:
+                    winning_endpoint = str(path)
+                    # Try to parse JSON to get api code
+                    try:
+                        data = resp.json()
+                        tk["api_code"] = data.get("code") or data.get("status_code") or 200
+                    except Exception:
+                        pass
+                    break
+            except Exception as e:
+                attempts.append({"path": path, "error": str(e)[:120]})
+        tk["attempts"] = attempts
+        if winning_endpoint:
+            tk["verdict"] = "OK"
+            tk["winning_endpoint"] = winning_endpoint
+            tk["http"] = 200
+        else:
+            tk["verdict"] = "ALL_ENDPOINTS_FAILED"
+            tk["detail"] = (
+                "Every candidate TikHub endpoint returned non-200. See "
+                "attempts[] for status codes per path. Either the key is "
+                "invalid / expired, or TikHub has moved to yet another "
+                "URL pattern not in this probe."
+            )
     report["tikhub"] = tk
 
     # ------------------------------------------------------------------
@@ -1057,6 +1119,9 @@ if __name__ == "__main__":
         print(run_game_name_translate(limit=limit))
     elif len(sys.argv) >= 2 and sys.argv[1] == "api_key_check":
         run_api_key_check()
+    elif len(sys.argv) >= 2 and sys.argv[1] == "wechat_intelligence":
+        target = sys.argv[2] if len(sys.argv) > 2 else None
+        print(run_wechat_intelligence(target_date=target))
     elif len(sys.argv) >= 3:
         platform = sys.argv[1]
         chart_type = sys.argv[2]
@@ -1083,4 +1148,5 @@ if __name__ == "__main__":
         print("       python -m src.worker feishu_worker")
         print("       python -m src.worker translate_names [limit]")
         print("       python -m src.worker api_key_check")
+        print("       python -m src.worker wechat_intelligence [yyyy-mm-dd]")
         print("Example: python -m src.worker app_store top_free US")

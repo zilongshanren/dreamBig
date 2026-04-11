@@ -164,6 +164,11 @@ def enqueue_game_name_translate():
     logger.info("Enqueued game name translation")
 
 
+def enqueue_wechat_intelligence():
+    queue.enqueue("src.worker.run_wechat_intelligence", job_timeout="20m")
+    logger.info("Enqueued wechat intelligence briefing")
+
+
 def main():
     scheduler = BlockingScheduler()
 
@@ -327,6 +332,14 @@ def main():
 
     # === 12:30: Project advice generation (after daily digest) ===
     scheduler.add_job(enqueue_project_advice, "cron", hour=12, minute=30, id="project_advice")
+
+    # === 13:00 HKT: WeChat IAA intelligence daily briefing (Opus think-tank
+    #                report — runs after scoring + project_advice so it has
+    #                the freshest signals to cross-correlate) ===
+    scheduler.add_job(
+        enqueue_wechat_intelligence, "cron", hour=13, minute=0,
+        id="wechat_intelligence",
+    )
 
     # === Tuesday 02:00: Asset analysis (weekly, low-traffic window, cheap but slow) ===
     scheduler.add_job(enqueue_asset_analysis, "cron", day_of_week="tue", hour=2, minute=0, id="asset_analysis")
