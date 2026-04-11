@@ -118,62 +118,72 @@ def run_alerts():
 def run_social_signals():
     """Collect social media signals for high-potential games.
 
-    LIMITED TO top-50 games by yesterday's potential score (+ watchlisted
-    games). This caps TikHub API usage — unbounded iteration over all
-    games previously burned ~9000 calls/day against TikHub's paid plans.
-    Games outside this set are picked up by run_scrape_social_depth
-    separately (also capped), so coverage is still good.
+    LIMITED to top-50 games by yesterday's potential score (+ watchlisted
+    games) + every wechat_mini listing so the /  wechat dashboard has
+    data on day one. Free Bilibili-only path (TikHub gated off by default).
+
+    All async calls share a single event loop so the scraper's
+    httpx.AsyncClient stays bound to the loop that created it — the
+    previous per-game `asyncio.run()` approach broke with "Event loop is
+    closed" after the first iteration.
     """
     logger.info("Starting social signal collection")
     from src.scrapers.social_media import SocialMediaScraper
 
-    scraper = SocialMediaScraper()
+    async def _run() -> None:
+        scraper = SocialMediaScraper()
+        try:
+            with psycopg.connect(DB_URL) as conn:
+                games = conn.execute(
+                    """
+                    SELECT g.id, COALESCE(g.name_zh, g.name_en) AS name
+                    FROM games g
+                    LEFT JOIN potential_scores ps ON ps.game_id = g.id
+                      AND ps.scored_at = CURRENT_DATE - INTERVAL '1 day'
+                    WHERE (ps.overall_score >= 50
+                           OR EXISTS (
+                                SELECT 1 FROM game_tags gt
+                                WHERE gt.game_id = g.id AND gt.tag = 'watchlist'
+                           )
+                           OR EXISTS (
+                                SELECT 1 FROM platform_listings pl
+                                WHERE pl.game_id = g.id AND pl.platform = 'wechat_mini'
+                           ))
+                    ORDER BY ps.overall_score DESC NULLS LAST
+                    LIMIT 60
+                    """
+                ).fetchall()
 
-    with psycopg.connect(DB_URL) as conn:
-        games = conn.execute(
-            """
-            SELECT g.id, COALESCE(g.name_zh, g.name_en) AS name
-            FROM games g
-            LEFT JOIN potential_scores ps ON ps.game_id = g.id
-              AND ps.scored_at = CURRENT_DATE - INTERVAL '1 day'
-            WHERE (ps.overall_score >= 50
-                   OR EXISTS (
-                        SELECT 1 FROM game_tags gt
-                        WHERE gt.game_id = g.id AND gt.tag = 'watchlist'
-                   ))
-            ORDER BY ps.overall_score DESC NULLS LAST
-            LIMIT 50
-            """
-        ).fetchall()
-
-        for game_id, game_name in games:
-            if not game_name:
-                continue
-
+                for game_id, game_name in games:
+                    if not game_name:
+                        continue
+                    try:
+                        signals = await scraper.collect_signals(game_name)
+                        for sig in signals:
+                            conn.execute(
+                                """
+                                INSERT INTO social_signals
+                                (game_id, platform, video_count, view_count, like_count,
+                                 hashtag_volume, signal_date)
+                                VALUES (%s, %s, %s, %s, %s, %s, CURRENT_DATE)
+                                ON CONFLICT (game_id, platform, signal_date) DO UPDATE SET
+                                    video_count = EXCLUDED.video_count,
+                                    view_count = EXCLUDED.view_count,
+                                    like_count = EXCLUDED.like_count
+                                """,
+                                (game_id, sig.platform, sig.video_count,
+                                 sig.view_count, sig.like_count, sig.hashtag_volume),
+                            )
+                        conn.commit()
+                    except Exception as e:
+                        logger.warning(f"Social signal failed for '{game_name}': {e}")
+        finally:
             try:
-                signals = asyncio.run(scraper.collect_signals(game_name))
+                await scraper.close()
+            except Exception:
+                pass
 
-                for sig in signals:
-                    conn.execute(
-                        """
-                        INSERT INTO social_signals
-                        (game_id, platform, video_count, view_count, like_count,
-                         hashtag_volume, signal_date)
-                        VALUES (%s, %s, %s, %s, %s, %s, CURRENT_DATE)
-                        ON CONFLICT (game_id, platform, signal_date) DO UPDATE SET
-                            video_count = EXCLUDED.video_count,
-                            view_count = EXCLUDED.view_count,
-                            like_count = EXCLUDED.like_count
-                        """,
-                        (game_id, sig.platform, sig.video_count,
-                         sig.view_count, sig.like_count, sig.hashtag_volume),
-                    )
-
-                conn.commit()
-            except Exception as e:
-                logger.warning(f"Social signal failed for '{game_name}': {e}")
-
-    asyncio.run(scraper.close())
+    asyncio.run(_run())
     logger.info("Social signal collection complete")
 
 
@@ -187,55 +197,58 @@ def run_ad_intel():
     logger.info("Starting ad intel collection")
     from src.scrapers.ad_intel import AdIntelScraper
 
-    scraper = AdIntelScraper()
+    async def _run() -> None:
+        import json as _json
+        scraper = AdIntelScraper()
+        try:
+            with psycopg.connect(DB_URL) as conn:
+                games = conn.execute(
+                    """
+                    SELECT g.id, COALESCE(g.name_en, g.name_zh) AS name
+                    FROM games g
+                    LEFT JOIN potential_scores ps ON ps.game_id = g.id
+                      AND ps.scored_at = CURRENT_DATE - INTERVAL '1 day'
+                    WHERE (ps.overall_score >= 50
+                           OR EXISTS (
+                                SELECT 1 FROM game_tags gt
+                                WHERE gt.game_id = g.id AND gt.tag = 'watchlist'
+                           ))
+                    ORDER BY ps.overall_score DESC NULLS LAST
+                    LIMIT 50
+                    """
+                ).fetchall()
 
-    with psycopg.connect(DB_URL) as conn:
-        games = conn.execute(
-            """
-            SELECT g.id, COALESCE(g.name_en, g.name_zh) AS name
-            FROM games g
-            LEFT JOIN potential_scores ps ON ps.game_id = g.id
-              AND ps.scored_at = CURRENT_DATE - INTERVAL '1 day'
-            WHERE (ps.overall_score >= 50
-                   OR EXISTS (
-                        SELECT 1 FROM game_tags gt
-                        WHERE gt.game_id = g.id AND gt.tag = 'watchlist'
-                   ))
-            ORDER BY ps.overall_score DESC NULLS LAST
-            LIMIT 50
-            """
-        ).fetchall()
-
-        for game_id, game_name in games:
-            if not game_name:
-                continue
-
+                for game_id, game_name in games:
+                    if not game_name:
+                        continue
+                    try:
+                        signals = await scraper.collect_signals(game_name)
+                        for sig in signals:
+                            conn.execute(
+                                """
+                                INSERT INTO ad_intelligence
+                                (game_id, source, active_creatives, markets,
+                                 creative_types, estimated_spend, signal_date)
+                                VALUES (%s, %s, %s, %s, %s, %s, CURRENT_DATE)
+                                ON CONFLICT (game_id, source, signal_date) DO UPDATE SET
+                                    active_creatives = EXCLUDED.active_creatives,
+                                    markets = EXCLUDED.markets,
+                                    creative_types = EXCLUDED.creative_types,
+                                    estimated_spend = EXCLUDED.estimated_spend
+                                """,
+                                (game_id, sig.source, sig.active_creatives,
+                                 sig.markets, sig.creative_types, sig.estimated_spend),
+                            )
+                        conn.commit()
+                    except Exception as e:
+                        logger.warning(f"Ad intel failed for '{game_name}': {e}")
+        finally:
             try:
-                signals = asyncio.run(scraper.collect_signals(game_name))
+                await scraper.close()
+            except Exception:
+                pass
 
-                for sig in signals:
-                    import json
-                    conn.execute(
-                        """
-                        INSERT INTO ad_intelligence
-                        (game_id, source, active_creatives, markets,
-                         creative_types, estimated_spend, signal_date)
-                        VALUES (%s, %s, %s, %s, %s, %s, CURRENT_DATE)
-                        ON CONFLICT (game_id, source, signal_date) DO UPDATE SET
-                            active_creatives = EXCLUDED.active_creatives,
-                            markets = EXCLUDED.markets,
-                            creative_types = EXCLUDED.creative_types,
-                            estimated_spend = EXCLUDED.estimated_spend
-                        """,
-                        (game_id, sig.source, sig.active_creatives,
-                         sig.markets, sig.creative_types, sig.estimated_spend),
-                    )
-
-                conn.commit()
-            except Exception as e:
-                logger.warning(f"Ad intel failed for '{game_name}': {e}")
-
-    asyncio.run(scraper.close())
+    asyncio.run(_run())
     logger.info("Ad intel collection complete")
 
 

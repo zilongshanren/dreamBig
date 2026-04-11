@@ -210,15 +210,20 @@ class ScoringEngine:
         max_possible = 0.0
 
         for platform, video_count, view_count, like_count in rows:
-            weight = platform_weights.get(platform, 0.5)
+            weight = float(platform_weights.get(platform, 0.5))
             max_possible += weight * 100
 
-            # Normalize views: 100K views = 50 score, 1M+ = 100
-            view_score = min(100, (view_count or 0) / 10000)
-            # Video count bonus: more creators = more organic
-            video_bonus = min(30, (video_count or 0) * 2)
+            # SUM() on BIGINT returns numeric → Decimal in psycopg3.
+            # Cast to int up front so all downstream arithmetic is native.
+            vc = int(view_count or 0)
+            vid = int(video_count or 0)
 
-            platform_score = min(100, view_score + video_bonus)
+            # Normalize views: 100K views = 50 score, 1M+ = 100
+            view_score = min(100.0, vc / 10000.0)
+            # Video count bonus: more creators = more organic
+            video_bonus = min(30, vid * 2)
+
+            platform_score = min(100.0, view_score + video_bonus)
             total_score += platform_score * weight
 
         if max_possible == 0:
@@ -275,19 +280,24 @@ class ScoringEngine:
             if rating is None:
                 continue
 
+            # rating column is DECIMAL — convert to float up front so every
+            # downstream operation is native python and never mixes Decimal
+            # with float weights / divisors.
+            rating_f = float(rating)
+            count = int(count or 0)
+
             # Normalize rating to 0-60 (rating out of 5)
-            rating_norm = min(60, (rating / 5) * 60)
+            rating_norm = min(60.0, (rating_f / 5.0) * 60.0)
 
             # Review count bonus: 1K = +10, 10K = +25, 100K+ = +40
-            count = count or 0
             if count >= 100000:
-                count_bonus = 40
+                count_bonus = 40.0
             elif count >= 10000:
-                count_bonus = 25
+                count_bonus = 25.0
             elif count >= 1000:
-                count_bonus = 10
+                count_bonus = 10.0
             else:
-                count_bonus = max(0, count / 100)
+                count_bonus = max(0.0, count / 100.0)
 
             total = int(rating_norm + count_bonus)
             best_score = max(best_score, total)

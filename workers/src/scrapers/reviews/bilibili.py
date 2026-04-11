@@ -46,6 +46,39 @@ _USER_AGENT = (
 )
 
 
+# Bilibili BV↔AV conversion — the new-format BV IDs introduced in 2020.
+# AID is encoded inside the BVID via a fixed permutation + xor mask.
+# Algorithm reference: https://www.zhihu.com/question/381784377/answer/1099438784
+#
+# We use this instead of the /x/web-interface/view endpoint because /view is
+# aggressively rate-limited from datacenter IPs (returns code != 0 for 42/43
+# BVIDs in practice), while local conversion is zero-cost and always correct.
+_BV_TABLE = "fZodR9XQDSUm21yCkr6zBqiveYah8bt4xsWpHnJE7jL5VG3guMTKNPAwcF"
+_BV_TABLE_MAP = {c: i for i, c in enumerate(_BV_TABLE)}
+_BV_POS = (11, 10, 3, 8, 4, 6)
+_BV_XOR = 177_451_812
+_BV_ADD = 8_728_348_608
+
+
+def _bvid_to_aid_local(bvid: str) -> int | None:
+    """Local BV→AV converter for classic 12-char BVIDs ("BV1xxxxxxxxxx").
+
+    Returns None for malformed inputs; never hits the network.
+    """
+    if not bvid or not bvid.startswith("BV") or len(bvid) != 12:
+        return None
+    try:
+        r = 0
+        for i in range(6):
+            ch = bvid[_BV_POS[i]]
+            r += _BV_TABLE_MAP[ch] * (58 ** i)
+        return (r - _BV_ADD) ^ _BV_XOR
+    except KeyError:
+        return None
+    except Exception:
+        return None
+
+
 class BilibiliReviewScraper(BaseReviewScraper):
     """Scrapes Bilibili comments via headless Chromium + page-scoped requests."""
 
@@ -370,31 +403,29 @@ class BilibiliReviewScraper(BaseReviewScraper):
     async def _resolve_bvids(
         self, dom_videos: list[dict[str, Any]], limit: int
     ) -> list[dict[str, Any]]:
-        """Resolve each BVID to numeric aid via the /view endpoint.
+        """Resolve each BVID to numeric aid using local conversion.
 
-        Runs lookups concurrently (up to 5 at a time) so the DOM fallback
-        isn't painfully slow on cold cache.
+        We previously called /x/web-interface/view per BVID but Bilibili
+        rate-limits that endpoint heavily from datacenter IPs — in our
+        last run 42 out of 43 calls failed. The BV format encodes the AID
+        directly, so we compute it locally for free.
         """
-        import asyncio as _asyncio
-
-        sem = _asyncio.Semaphore(5)
-        candidates = dom_videos[: limit * 2]  # a few extras for failures
-
-        async def _one(v: dict[str, Any]) -> dict[str, Any] | None:
-            async with sem:
-                aid = await self._bvid_to_aid(v["bvid"])
-            if not aid:
-                return None
-            return {
-                "aid": aid,
-                "bvid": v["bvid"],
-                "title": v.get("title", ""),
-                "play": 0,
-            }
-
-        results = await _asyncio.gather(*[_one(v) for v in candidates])
-        resolved = [r for r in results if r is not None]
-        return resolved[:limit]
+        resolved: list[dict[str, Any]] = []
+        for v in dom_videos:
+            aid = _bvid_to_aid_local(v["bvid"])
+            if not aid or aid <= 0:
+                continue
+            resolved.append(
+                {
+                    "aid": aid,
+                    "bvid": v["bvid"],
+                    "title": v.get("title", ""),
+                    "play": 0,
+                }
+            )
+            if len(resolved) >= limit:
+                break
+        return resolved
 
     async def _bvid_to_aid(self, bvid: str) -> int | None:
         """Look up numeric aid for a bvid via Bilibili's view endpoint."""
