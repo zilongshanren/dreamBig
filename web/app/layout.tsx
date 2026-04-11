@@ -11,7 +11,8 @@ export const metadata: Metadata = {
 };
 
 const NAV_ITEMS = [
-  { href: "/", label: "Dashboard", icon: "📊" },
+  { href: "/wechat", label: "微信爆款", icon: "💬" },
+  { href: "/", label: "全局总览", icon: "📊" },
   { href: "/games", label: "游戏库", icon: "🎮" },
   { href: "/rankings", label: "排行榜", icon: "🏆" },
   { href: "/trending", label: "趋势", icon: "📈" },
