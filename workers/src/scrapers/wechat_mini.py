@@ -1,32 +1,23 @@
-"""WeChat Mini Games scraper — Playwright-based aldzs.com parser.
+"""WeChat Mini Games scraper via Tencent Ying Yong Bao (sj.qq.com).
 
-WeChat's ecosystem is closed, so official APIs are unavailable. The
-de-facto public ranking source is 阿拉丁指数 (aldzs.com), which publishes
-daily mini-game leaderboards. Their page is JS-rendered so httpx alone
-doesn't work — this scraper uses Playwright to load the page and then
-defensively extracts rank rows via a JavaScript runtime call.
+The page at https://sj.qq.com/wechat-game is a Next.js SPA but its full
+ranking data is embedded server-side in ``__NEXT_DATA__``. Each of the
+three leaderboard sub-pages returns 20 ranked games with stable Tencent
+``app_id`` identifiers and Chinese names. No Playwright required.
 
-Strategy:
-  1. Open the rankings page with Playwright + realistic headers.
-  2. Wait for network idle so JS has populated the ranking grid.
-  3. Evaluate a JS snippet in the page that walks the DOM and returns
-     a list of {rank, name, icon, category} objects. The walker is
-     tolerant of layout changes — it looks for any element whose text
-     matches a rank pattern (integer 1..200) with adjacent Chinese text.
-  4. If the walker returns nothing, fall back to parsing the full HTML
-     with a couple of common CSS selectors.
-  5. On any failure, log a clear warning and return [] — the scheduler
-     job stays green.
+Chart mapping:
+  - ``hot``           → 热门榜 /wechat-game/popular-game-rank
+  - ``top_grossing``  → 畅销榜 /wechat-game/best-sell-game-rank
+  - ``new``           → 新游榜 /wechat-game/new-game-rank
 
-Install: already covered by the workers/Dockerfile (playwright + chromium).
+All charts are CN-region only (WeChat ecosystem).
 """
 
 from __future__ import annotations
 
-import asyncio
-import hashlib
+import json
 import logging
-import random
+import re
 from typing import Any
 
 from .base import BaseScraper, GameDetails, RankingEntry
@@ -34,197 +25,247 @@ from .base import BaseScraper, GameDetails, RankingEntry
 logger = logging.getLogger(__name__)
 
 
-# Primary and fallback ranking URLs (aldzs.com has moved sections before).
-ALDZS_CANDIDATE_URLS = [
-    "https://www.aldzs.com/viewpointminigame",
-    "https://www.aldzs.com/top/minigame",
-    "https://www.aldzs.com/top/game",
-    "https://www.aldzs.com/minigame/rank",
-]
-
-
-# JS snippet that walks the DOM and returns a list of candidate rank rows.
-# It's deliberately generic — we look for any element with a number 1..300
-# followed by a non-numeric text chunk (the game name).
-_RANK_EXTRACTOR_JS = r"""
-() => {
-    const out = [];
-    const seen = new Set();
-
-    // Strategy A: look for tables / lists with explicit rank cells
-    const rows = document.querySelectorAll(
-        'tr, li, .rank-item, .top-item, [class*="rank"], [class*="game"]'
-    );
-    for (const row of rows) {
-        const text = (row.innerText || '').trim();
-        if (!text) continue;
-
-        // Find a 1-3 digit rank at the start or isolated
-        const m = text.match(/^(\d{1,3})\b/);
-        if (!m) continue;
-        const rank = parseInt(m[1], 10);
-        if (rank < 1 || rank > 500) continue;
-
-        // Extract the first line or biggest Chinese/English text chunk
-        // that isn't just the rank number.
-        const lines = text.split(/\n+/).map(s => s.trim()).filter(Boolean);
-        if (lines.length < 2) continue;
-        // First line often is "1" then second is name. Or first line is "1 游戏名"
-        let name = null;
-        if (/^\d+$/.test(lines[0]) && lines.length > 1) {
-            name = lines[1];
-        } else {
-            // "1 游戏名" — strip the leading rank
-            name = lines[0].replace(/^\d{1,3}\s*[.、·]?\s*/, '');
-        }
-        if (!name || name.length < 2 || name.length > 80) continue;
-        if (/^\d+$/.test(name)) continue;
-
-        // Dedup by rank + name
-        const key = rank + '|' + name;
-        if (seen.has(key)) continue;
-        seen.add(key);
-
-        // Try to grab an icon img inside this row
-        let iconUrl = null;
-        const img = row.querySelector('img');
-        if (img) iconUrl = img.src || img.getAttribute('data-src') || null;
-
-        out.push({ rank, name, iconUrl });
-        if (out.length >= 300) break;
-    }
-
-    // Sort by rank and return
-    out.sort((a, b) => a.rank - b.rank);
-    return out;
+# Chart type → Tencent ranking page path
+_CHART_PATHS: dict[str, str] = {
+    "hot": "/wechat-game/popular-game-rank",
+    "top_grossing": "/wechat-game/best-sell-game-rank",
+    "new": "/wechat-game/new-game-rank",
 }
-"""
+
+# Fallback single-page source (5 items per ranking, but all three in one HTML)
+_FALLBACK_PATH = "/wechat-game"
+
+_BASE = "https://sj.qq.com"
+
+
+# Matches the hydration blob Next.js emits. Tolerant to whitespace / attrs.
+_NEXT_DATA_RE = re.compile(
+    r'<script[^>]*id="__NEXT_DATA__"[^>]*>(.*?)</script>',
+    re.DOTALL,
+)
 
 
 class WeChatMiniScraper(BaseScraper):
-    """WeChat Mini Games scraper via aldzs.com rankings page."""
+    """Scrapes WeChat mini-game rankings from sj.qq.com."""
 
     platform = "wechat_mini"
-    rate_limit = 6.0  # be gentle with aldzs.com
+    rate_limit = 2.5
 
     async def scrape_rankings(
         self, chart_type: str = "hot", region: str = "CN"
     ) -> list[RankingEntry]:
-        """Scrape WeChat mini-game rankings from aldzs.com.
+        """Fetch a chart of WeChat mini-games.
 
-        chart_type is currently ignored (there's only the generic "hot"
-        ranking exposed). region is always CN — WeChat has no other region.
+        Always returns CN-region. Unknown chart_type falls back to the
+        home page (5 items from 热门榜).
         """
-        entries: list[dict] = []
-        last_err: Exception | None = None
+        path = _CHART_PATHS.get(chart_type, _FALLBACK_PATH)
+        url = f"{_BASE}{path}"
 
-        for url in ALDZS_CANDIDATE_URLS:
-            try:
-                entries = await self._scrape_via_playwright(url)
-                if entries:
-                    logger.info(
-                        f"[wechat_mini] got {len(entries)} ranks from {url}"
-                    )
-                    break
-                logger.debug(f"[wechat_mini] empty rankings from {url}, trying next")
-            except Exception as e:
-                last_err = e
-                logger.debug(f"[wechat_mini] {url} failed: {e}")
+        try:
+            client = await self.get_client()
+            await self.throttle()
+            resp = await client.get(
+                url,
+                headers={
+                    "Accept-Language": "zh-CN,zh;q=0.9",
+                    "Referer": f"{_BASE}/",
+                },
+                timeout=25,
+            )
+            resp.raise_for_status()
+            html = resp.text
+        except Exception as e:
+            logger.warning(f"[wechat_mini] fetch failed for {url}: {e}")
+            return []
 
-        if not entries:
+        next_data = _extract_next_data(html)
+        if not next_data:
+            logger.warning(f"[wechat_mini] __NEXT_DATA__ not found at {url}")
+            return []
+
+        items = _collect_rank_items(next_data, chart_type)
+        if not items:
             logger.warning(
-                f"[wechat_mini] all candidate URLs failed or returned empty. "
-                f"Last error: {last_err}. aldzs.com may have changed layout — "
-                f"check the selectors in workers/src/scrapers/wechat_mini.py."
+                f"[wechat_mini] no ranking items extracted from {url} — "
+                f"page structure may have changed"
             )
             return []
 
         results: list[RankingEntry] = []
-        for e in entries:
-            rank = e.get("rank")
-            name = (e.get("name") or "").strip()
-            if not name or not isinstance(rank, int):
+        for rank, raw in enumerate(items, start=1):
+            name = (raw.get("app_name") or raw.get("name") or "").strip()
+            app_id = str(raw.get("app_id") or raw.get("appId") or "").strip()
+            if not name or not app_id:
                 continue
-            # aldzs doesn't expose a stable mini-game ID, so we synthesise
-            # one from the hashed name. Name-based (NOT rank-based) so a
-            # game climbing from #10 to #3 still maps to the same row.
-            synthetic_id = "wxgame_" + hashlib.md5(name.encode("utf-8")).hexdigest()[:12]
+
+            developer = (raw.get("developer") or raw.get("cp_name") or "") or None
+            if developer:
+                developer = developer.strip() or None
+            icon_url = (raw.get("icon") or raw.get("icon_url") or "") or None
+            cate = (raw.get("cate_name_new") or raw.get("cate_name") or "") or None
+            rating_raw = raw.get("average_rating")
+            rating: float | None = None
+            try:
+                if rating_raw and float(rating_raw) > 0:
+                    rating = float(rating_raw)
+            except (TypeError, ValueError):
+                rating = None
+
             results.append(
                 RankingEntry(
-                    platform_id=synthetic_id,
+                    platform_id=app_id,
                     name=name,
                     rank_position=rank,
                     chart_type=chart_type,
                     region="CN",
-                    icon_url=e.get("iconUrl"),
-                    metadata={"source": "aldzs.com"},
-                )
-            )
-        return results
-
-    async def _scrape_via_playwright(self, url: str) -> list[dict]:
-        """Load `url` with Playwright, then run the rank extractor JS."""
-        try:
-            from playwright.async_api import async_playwright
-        except ImportError:
-            logger.warning(
-                "[wechat_mini] playwright not installed — skipping. "
-                "The workers Dockerfile installs it; make sure you built "
-                "the scraper image with --no-cache if you're hitting this."
-            )
-            return []
-
-        ua = random.choice([
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
-            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
-        ])
-
-        async with async_playwright() as pw:
-            browser = await pw.chromium.launch(
-                headless=True,
-                args=[
-                    "--no-sandbox",
-                    "--disable-dev-shm-usage",
-                    "--disable-blink-features=AutomationControlled",
-                ],
-            )
-            try:
-                ctx = await browser.new_context(
-                    user_agent=ua,
-                    locale="zh-CN",
-                    viewport={"width": 1280, "height": 800},
-                    extra_http_headers={
-                        "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.5",
-                        "Referer": "https://www.aldzs.com/",
+                    rating=rating,
+                    developer=developer,
+                    genre=cate,
+                    icon_url=icon_url,
+                    url=f"{_BASE}/appdetail/{app_id}",
+                    metadata={
+                        "source": "sj.qq.com",
+                        "editor_intro": (raw.get("editor_intro") or "")[:300] or None,
+                        "pkg_name": raw.get("pkg_name"),
                     },
                 )
-                page = await ctx.new_page()
+            )
 
-                await page.goto(url, wait_until="domcontentloaded", timeout=45_000)
-                # Wait for any lazy-loaded content to settle
-                try:
-                    await page.wait_for_load_state("networkidle", timeout=20_000)
-                except Exception:
-                    pass  # networkidle can linger on ad-heavy pages
-                await page.wait_for_timeout(1500)
-
-                # Debug: if verbose logging is on, dump a tiny HTML preview.
-                try:
-                    html_preview = await page.evaluate(
-                        "() => document.body.innerText.slice(0, 500)"
-                    )
-                    logger.debug(f"[wechat_mini] body preview from {url}: {html_preview!r}")
-                except Exception:
-                    pass
-
-                raw: list[dict[str, Any]] = await page.evaluate(_RANK_EXTRACTOR_JS)
-                return raw or []
-            finally:
-                await browser.close()
+        logger.info(f"[wechat_mini] {chart_type}: {len(results)} ranked entries")
+        return results
 
     async def scrape_game_details(self, platform_id: str) -> GameDetails | None:
-        """Details scraping not supported — aldzs.com public view doesn't expose detail pages."""
-        logger.debug(
-            f"[wechat_mini] scrape_game_details({platform_id}) is a no-op for this scraper"
+        """Fetch the detail page for a single mini-game by its Tencent app_id."""
+        url = f"{_BASE}/appdetail/{platform_id}"
+        try:
+            client = await self.get_client()
+            await self.throttle()
+            resp = await client.get(url, timeout=20)
+            resp.raise_for_status()
+            html = resp.text
+        except Exception as e:
+            logger.debug(f"[wechat_mini] detail fetch failed for {platform_id}: {e}")
+            return None
+
+        next_data = _extract_next_data(html)
+        if not next_data:
+            return None
+
+        # Detail pages put the app blob in pageProps.context.detailApp or similar
+        def _walk(obj: Any) -> dict | None:
+            if isinstance(obj, dict):
+                if "app_id" in obj and ("app_name" in obj or "name" in obj):
+                    return obj
+                for v in obj.values():
+                    found = _walk(v)
+                    if found:
+                        return found
+            elif isinstance(obj, list):
+                for x in obj:
+                    found = _walk(x)
+                    if found:
+                        return found
+            return None
+
+        app = _walk(next_data) or {}
+        if not app:
+            return None
+
+        return GameDetails(
+            platform_id=platform_id,
+            name=(app.get("app_name") or app.get("name") or "").strip(),
+            developer=(app.get("developer") or app.get("cp_name") or None),
+            description=(app.get("editor_intro") or app.get("description") or None),
+            genre=(app.get("cate_name_new") or app.get("cate_name") or None),
+            icon_url=(app.get("icon") or None),
+            screenshots=_collect_screenshots(app),
+            url=url,
+            metadata={"source": "sj.qq.com"},
         )
+
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+
+def _extract_next_data(html: str) -> dict | None:
+    """Pull the __NEXT_DATA__ JSON blob out of a Next.js HTML response."""
+    m = _NEXT_DATA_RE.search(html)
+    if not m:
         return None
+    try:
+        return json.loads(m.group(1))
+    except json.JSONDecodeError as e:
+        logger.debug(f"[wechat_mini] __NEXT_DATA__ not valid JSON: {e}")
+        return None
+
+
+# Mapping from chart_type to the card title we're looking for on the home page.
+_CHART_TO_HOME_TITLE = {
+    "hot": "热门榜",
+    "top_grossing": "畅销榜",
+    "new": "新游榜",
+}
+
+
+def _collect_rank_items(next_data: dict, chart_type: str) -> list[dict]:
+    """Walk __NEXT_DATA__ and return the best matching ranking item list.
+
+    Works for both:
+      - Dedicated ranking pages (/wechat-game/popular-game-rank etc): a single
+        component with 20+ items.
+      - The home page (/wechat-game): multiple YYB_HOME_RANK_* cards, each
+        with 5 items, keyed by card title (热门榜 / 畅销榜 / 新游榜).
+    """
+    try:
+        components = (
+            next_data.get("props", {})
+            .get("pageProps", {})
+            .get("dynamicCardResponse", {})
+            .get("data", {})
+            .get("components", [])
+        )
+    except AttributeError:
+        components = []
+
+    if not components:
+        return []
+
+    # Case 1: single-component ranking page (20 items).
+    if len(components) == 1:
+        return list(components[0].get("data", {}).get("itemData") or [])
+
+    # Case 2: home page — pick by title.
+    target_title = _CHART_TO_HOME_TITLE.get(chart_type)
+    if target_title:
+        for comp in components:
+            d = comp.get("data", {}) or {}
+            if d.get("title") == target_title:
+                return list(d.get("itemData") or [])
+
+    # Fallback: the first HOT_WECHAT_GAME card.
+    for comp in components:
+        if comp.get("cardId") == "YYB_HOME_HOT_WECHAT_GAME":
+            return list(comp.get("data", {}).get("itemData") or [])
+
+    return []
+
+
+def _collect_screenshots(app: dict) -> list[str]:
+    """Extract screenshot URLs from an sj.qq.com app blob."""
+    shots: list[str] = []
+    for key in ("audited_snapshots", "screenshots", "image"):
+        v = app.get(key)
+        if isinstance(v, list):
+            for x in v:
+                if isinstance(x, str):
+                    shots.append(x)
+                elif isinstance(x, dict):
+                    url = x.get("url") or x.get("image_url")
+                    if url:
+                        shots.append(url)
+        elif isinstance(v, str):
+            shots.append(v)
+    return shots[:10]

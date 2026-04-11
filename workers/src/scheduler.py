@@ -218,10 +218,18 @@ def main():
         args=["crazygames", "trending", "GLOBAL"], id="cg_trending",
     )
 
-    # WeChat Mini Games (aldzs.com via Playwright)
+    # WeChat Mini Games — 3 charts from sj.qq.com (腾讯应用宝)
     scheduler.add_job(
         enqueue_scrape, "cron", hour=6, minute=40,
         args=["wechat_mini", "hot", "CN"], id="wechat_mini_hot",
+    )
+    scheduler.add_job(
+        enqueue_scrape, "cron", hour=6, minute=42,
+        args=["wechat_mini", "top_grossing", "CN"], id="wechat_mini_grossing",
+    )
+    scheduler.add_job(
+        enqueue_scrape, "cron", hour=6, minute=44,
+        args=["wechat_mini", "new", "CN"], id="wechat_mini_new",
     )
 
     # === Afternoon run: 14:00 HKT (2nd daily for major platforms) ===
