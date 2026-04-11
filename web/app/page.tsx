@@ -1,6 +1,7 @@
 import Link from "next/link";
 import { prisma } from "@/lib/prisma";
 import { PLATFORM_LABELS, formatNumber } from "@/lib/utils";
+import { getCurrentWorkspaceId } from "@/lib/workspace";
 
 export const dynamic = "force-dynamic";
 
@@ -77,7 +78,7 @@ function daysAgo(n: number): Date {
   return d;
 }
 
-async function getStats() {
+async function getStats(workspaceId: string) {
   try {
     const [gameCount, platformCount, alertCount, topScores] =
       await Promise.all([
@@ -86,6 +87,7 @@ async function getStats() {
         prisma.alertEvent.count({
           where: {
             triggeredAt: { gte: new Date(Date.now() - 24 * 60 * 60 * 1000) },
+            alert: { workspaceId },
           },
         }),
         prisma.potentialScore.findMany({
@@ -265,9 +267,10 @@ async function getIAACandidates(filters: Filters) {
   }
 }
 
-async function getRecentAlerts() {
+async function getRecentAlerts(workspaceId: string) {
   try {
     return await prisma.alertEvent.findMany({
+      where: { alert: { workspaceId } },
       orderBy: { triggeredAt: "desc" },
       take: 5,
       include: { game: true, alert: true },
@@ -300,6 +303,7 @@ export default async function DashboardPage({
 }) {
   const params = await searchParams;
   const filters = parseFilters(params);
+  const workspaceId = await getCurrentWorkspaceId();
 
   const [
     stats,
@@ -310,12 +314,12 @@ export default async function DashboardPage({
     recentAlerts,
     scraperStatus,
   ] = await Promise.all([
-    getStats(),
+    getStats(workspaceId),
     getRankingMovement(filters),
     getReputationDecline(filters),
     getSocialBurst(filters),
     getIAACandidates(filters),
-    getRecentAlerts(),
+    getRecentAlerts(workspaceId),
     getScraperStatus(),
   ]);
 

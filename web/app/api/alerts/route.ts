@@ -1,9 +1,12 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
+import { getCurrentWorkspaceId } from "@/lib/workspace";
 
 export async function GET() {
   try {
+    const workspaceId = await getCurrentWorkspaceId();
     const alerts = await prisma.alert.findMany({
+      where: { workspaceId },
       orderBy: { createdAt: "desc" },
       include: {
         _count: { select: { alertEvents: true } },
@@ -23,10 +26,12 @@ export async function GET() {
 
 export async function POST(req: NextRequest) {
   try {
+    const workspaceId = await getCurrentWorkspaceId();
     const body = await req.json();
 
     const alert = await prisma.alert.create({
       data: {
+        workspaceId,
         name: body.name,
         alertType: body.alertType || "ranking_jump",
         severity: body.severity || "P2",

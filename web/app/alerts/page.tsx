@@ -1,11 +1,13 @@
 import Link from "next/link";
 import { prisma } from "@/lib/prisma";
+import { getCurrentWorkspaceId } from "@/lib/workspace";
 
 export const dynamic = "force-dynamic";
 
-async function getAlerts() {
+async function getAlerts(workspaceId: string) {
   try {
     return await prisma.alert.findMany({
+      where: { workspaceId },
       orderBy: { createdAt: "desc" },
       include: {
         _count: { select: { alertEvents: true } },
@@ -16,9 +18,10 @@ async function getAlerts() {
   }
 }
 
-async function getRecentEvents() {
+async function getRecentEvents(workspaceId: string) {
   try {
     return await prisma.alertEvent.findMany({
+      where: { alert: { workspaceId } },
       orderBy: { triggeredAt: "desc" },
       take: 50,
       include: {
@@ -32,9 +35,10 @@ async function getRecentEvents() {
 }
 
 export default async function AlertsPage() {
+  const workspaceId = await getCurrentWorkspaceId();
   const [alerts, events] = await Promise.all([
-    getAlerts(),
-    getRecentEvents(),
+    getAlerts(workspaceId),
+    getRecentEvents(workspaceId),
   ]);
 
   return (

@@ -11,37 +11,37 @@ datasource db {
 // Core game entity (deduplicated across platforms)
 // ============================================================
 model Game {
-  id             Int       @id @default(autoincrement())
-  nameZh         String?   @map("name_zh")
-  nameEn         String?   @map("name_en")
+  id             Int      @id @default(autoincrement())
+  nameZh         String?  @map("name_zh")
+  nameEn         String?  @map("name_en")
   developer      String?
   genre          String?
-  subGenres      String[]  @map("sub_genres")
-  gameplayTags   String[]  @map("gameplay_tags")
-  iaaSuitability Int       @default(0) @map("iaa_suitability")
-  metadata       Json      @default("{}")
-  thumbnailUrl   String?   @map("thumbnail_url")
+  subGenres      String[] @map("sub_genres")
+  gameplayTags   String[] @map("gameplay_tags")
+  iaaSuitability Int      @default(0) @map("iaa_suitability")
+  metadata       Json     @default("{}")
+  thumbnailUrl   String?  @map("thumbnail_url")
   positioning    String?
-  coreLoop       String?   @map("core_loop")
-  metaLoop       String?   @map("meta_loop")
-  pleasurePoints String[]  @default([]) @map("pleasure_points")
-  replayDrivers  String[]  @default([]) @map("replay_drivers")
-  iaaGrade       String?   @map("iaa_grade")
-  createdAt      DateTime  @default(now()) @map("created_at")
-  updatedAt      DateTime  @default(now()) @updatedAt @map("updated_at")
+  coreLoop       String?  @map("core_loop")
+  metaLoop       String?  @map("meta_loop")
+  pleasurePoints String[] @default([]) @map("pleasure_points")
+  replayDrivers  String[] @default([]) @map("replay_drivers")
+  iaaGrade       String?  @map("iaa_grade")
+  createdAt      DateTime @default(now()) @map("created_at")
+  updatedAt      DateTime @default(now()) @updatedAt @map("updated_at")
 
-  platformListings    PlatformListing[]
-  socialSignals       SocialSignal[]
-  adIntelligence      AdIntelligence[]
-  potentialScores     PotentialScore[]
-  alertEvents         AlertEvent[]
-  gameTags            GameTag[]
+  platformListings     PlatformListing[]
+  socialSignals        SocialSignal[]
+  adIntelligence       AdIntelligence[]
+  potentialScores      PotentialScore[]
+  alertEvents          AlertEvent[]
+  gameTags             GameTag[]
   reviewTopicSummaries ReviewTopicSummary[]
-  gameReport          GameReport?
-  gameEmbedding       GameEmbedding?
+  gameReport           GameReport?
+  gameEmbedding        GameEmbedding?
   socialContentSamples SocialContentSample[]
-  experiments         Experiment[]
-  assetAnalyses       GameAssetAnalysis[]
+  experiments          Experiment[]
+  assetAnalyses        GameAssetAnalysis[]
 
   @@map("games")
 }
@@ -52,7 +52,7 @@ model Game {
 model PlatformListing {
   id          Int       @id @default(autoincrement())
   gameId      Int       @map("game_id")
-  platform    String    // google_play, app_store, taptap, steam, etc.
+  platform    String // google_play, app_store, taptap, steam, etc.
   platformId  String    @map("platform_id")
   platformUrl String?   @map("platform_url")
   name        String
@@ -63,9 +63,9 @@ model PlatformListing {
   lastUpdated DateTime? @default(now()) @map("last_updated") @db.Date
   metadata    Json      @default("{}")
 
-  game              Game               @relation(fields: [gameId], references: [id])
-  rankingSnapshots  RankingSnapshot[]
-  reviews           Review[]
+  game             Game              @relation(fields: [gameId], references: [id])
+  rankingSnapshots RankingSnapshot[]
+  reviews          Review[]
 
   @@unique([platform, platformId])
   @@map("platform_listings")
@@ -98,7 +98,7 @@ model RankingSnapshot {
 model SocialSignal {
   id            Int      @id @default(autoincrement())
   gameId        Int      @map("game_id")
-  platform      String   // douyin, bilibili, tiktok, youtube
+  platform      String // douyin, bilibili, tiktok, youtube
   videoCount    Int      @default(0) @map("video_count")
   viewCount     BigInt   @default(0) @map("view_count")
   likeCount     BigInt   @default(0) @map("like_count")
@@ -118,7 +118,7 @@ model SocialSignal {
 model AdIntelligence {
   id              Int       @id @default(autoincrement())
   gameId          Int       @map("game_id")
-  source          String    // facebook_ad_library, appgrowing
+  source          String // facebook_ad_library, appgrowing
   activeCreatives Int       @default(0) @map("active_creatives")
   markets         String[]
   creativeTypes   String[]  @map("creative_types")
@@ -162,18 +162,21 @@ model PotentialScore {
 // ============================================================
 model Alert {
   id            Int      @id @default(autoincrement())
+  workspaceId   String   @map("workspace_id")
   name          String
   alertType     String   @map("alert_type") // ranking_jump, review_burst, social_burst, steam_momentum, taptap_heat
   severity      String   @default("P2") // P1, P2, P3
-  conditions    Json     // {"min_score": 70, "genres": ["puzzle","idle"]}
+  conditions    Json // {"min_score": 70, "genres": ["puzzle","idle"]}
   notifyChannel String   @default("feishu") @map("notify_channel")
   webhookUrl    String?  @map("webhook_url")
   isActive      Boolean  @default(true) @map("is_active")
   cooldownHours Int      @default(24) @map("cooldown_hours")
   createdAt     DateTime @default(now()) @map("created_at")
 
+  workspace   Workspace    @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
   alertEvents AlertEvent[]
 
+  @@index([workspaceId])
   @@map("alerts")
 }
 
@@ -201,14 +204,17 @@ model AlertEvent {
 // Game tags (manual curation)
 // ============================================================
 model GameTag {
-  gameId  Int      @map("game_id")
-  tag     String   // watchlist, contacted, licensed, rejected, porting
-  note    String?
-  taggedAt DateTime @default(now()) @map("tagged_at")
+  gameId      Int      @map("game_id")
+  tag         String // watchlist, contacted, licensed, rejected, porting
+  workspaceId String   @map("workspace_id")
+  note        String?
+  taggedAt    DateTime @default(now()) @map("tagged_at")
 
-  game Game @relation(fields: [gameId], references: [id])
+  game      Game      @relation(fields: [gameId], references: [id])
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
 
-  @@id([gameId, tag])
+  @@id([gameId, tag, workspaceId])
+  @@index([workspaceId])
   @@map("game_tags")
 }
 
@@ -233,19 +239,19 @@ model ScrapeJob {
 // Reviews (scraped review content per platform listing)
 // ============================================================
 model Review {
-  id                  Int       @id @default(autoincrement())
-  platformListingId   Int       @map("platform_listing_id")
-  externalId          String    @map("external_id")
-  rating              Int?      @db.SmallInt
-  content             String    @db.Text
-  authorName          String?   @map("author_name")
-  helpfulCount        Int?      @map("helpful_count")
+  id                  Int      @id @default(autoincrement())
+  platformListingId   Int      @map("platform_listing_id")
+  externalId          String   @map("external_id")
+  rating              Int?     @db.SmallInt
+  content             String   @db.Text
+  authorName          String?  @map("author_name")
+  helpfulCount        Int?     @map("helpful_count")
   language            String?
-  postedAt            DateTime  @map("posted_at")
+  postedAt            DateTime @map("posted_at")
   sentiment           String?
-  topics              String[]  @default([])
-  sentimentConfidence Decimal?  @map("sentiment_confidence") @db.Decimal(3, 2)
-  scrapedAt           DateTime  @default(now()) @map("scraped_at")
+  topics              String[] @default([])
+  sentimentConfidence Decimal? @map("sentiment_confidence") @db.Decimal(3, 2)
+  scrapedAt           DateTime @default(now()) @map("scraped_at")
 
   platformListing PlatformListing @relation(fields: [platformListingId], references: [id])
 
@@ -262,7 +268,7 @@ model ReviewTopicSummary {
   id              Int      @id @default(autoincrement())
   gameId          Int      @map("game_id")
   topic           String
-  sentiment       String   // positive, negative
+  sentiment       String // positive, negative
   sampleReviewIds Int[]    @default([]) @map("sample_review_ids")
   snippet         String
   reviewCount     Int      @map("review_count")
@@ -298,11 +304,11 @@ model GameReport {
 // Game embeddings (vector embeddings for similarity search)
 // ============================================================
 model GameEmbedding {
-  gameId     Int                          @id @map("game_id")
+  gameId     Int                         @id @map("game_id")
   embedding  Unsupported("vector(1536)")
   source     String
-  dim        Int                          @default(1536)
-  computedAt DateTime                     @map("computed_at")
+  dim        Int                         @default(1536)
+  computedAt DateTime                    @map("computed_at")
 
   game Game @relation(fields: [gameId], references: [id])
 
@@ -313,24 +319,67 @@ model GameEmbedding {
 // Phase 2: Auth (NextAuth.js v5 compatible)
 // ============================================================
 model User {
-  id            String    @id @default(cuid())
-  email         String    @unique
-  emailVerified DateTime? @map("email_verified")
-  name          String?
-  image         String?
-  passwordHash  String?   @map("password_hash")  // for credentials provider
-  role          String    @default("viewer")      // super_admin/analyst/publisher/monetization/viewer
-  isActive      Boolean   @default(true) @map("is_active")
-  createdAt     DateTime  @default(now()) @map("created_at")
-  updatedAt     DateTime  @default(now()) @updatedAt @map("updated_at")
-  lastLoginAt   DateTime? @map("last_login_at")
+  id              String    @id @default(cuid())
+  email           String    @unique
+  emailVerified   DateTime? @map("email_verified")
+  name            String?
+  image           String?
+  passwordHash    String?   @map("password_hash") // for credentials provider
+  role            String    @default("viewer") // super_admin/analyst/publisher/monetization/viewer
+  isActive        Boolean   @default(true) @map("is_active")
+  createdAt       DateTime  @default(now()) @map("created_at")
+  updatedAt       DateTime  @default(now()) @updatedAt @map("updated_at")
+  lastLoginAt     DateTime? @map("last_login_at")
+  lastWorkspaceId String?   @map("last_workspace_id")
 
-  accounts      Account[]
-  sessions      Session[]
-  subscriptions Subscription[]
-  auditLogs     AuditLog[]
+  accounts         Account[]
+  sessions         Session[]
+  subscriptions    Subscription[]
+  auditLogs        AuditLog[]
+  workspaceMembers WorkspaceMember[]
+  lastWorkspace    Workspace?        @relation("UserLastWorkspace", fields: [lastWorkspaceId], references: [id], onDelete: SetNull)
 
   @@map("users")
+}
+
+// ============================================================
+// Phase 3-4: Workspace (multi-tenant business actions)
+// ============================================================
+// Per-tenant tables: alerts, subscriptions, experiments, game_tags, audit_logs.
+// Game data (games / platform_listings / reviews / reports) stays globally shared.
+model Workspace {
+  id          String   @id
+  name        String
+  slug        String   @unique
+  description String?
+  isDefault   Boolean  @default(false) @map("is_default")
+  createdAt   DateTime @default(now()) @map("created_at")
+  updatedAt   DateTime @default(now()) @updatedAt @map("updated_at")
+
+  members       WorkspaceMember[]
+  alerts        Alert[]
+  subscriptions Subscription[]
+  experiments   Experiment[]
+  gameTags      GameTag[]
+  auditLogs     AuditLog[]
+  pinnedByUsers User[]            @relation("UserLastWorkspace")
+
+  @@index([isDefault])
+  @@map("workspaces")
+}
+
+model WorkspaceMember {
+  workspaceId String   @map("workspace_id")
+  userId      String   @map("user_id")
+  role        String   @default("analyst") // super_admin/analyst/publisher/monetization/viewer
+  joinedAt    DateTime @default(now()) @map("joined_at")
+
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@id([workspaceId, userId])
+  @@index([userId])
+  @@map("workspace_members")
 }
 
 // ============================================================
@@ -386,18 +435,21 @@ model VerificationToken {
 // Phase 2: Audit log (user actions trail)
 // ============================================================
 model AuditLog {
-  id        Int      @id @default(autoincrement())
-  userId    String?  @map("user_id")
-  action    String   // "create_alert"/"update_threshold"/"export_report"/"tag_game"/...
-  resource  String   // "alert:123"/"game:45"/...
-  diff      Json?    // before/after for sensitive changes
-  ip        String?
-  userAgent String?  @map("user_agent")
-  createdAt DateTime @default(now()) @map("created_at")
+  id          Int      @id @default(autoincrement())
+  userId      String?  @map("user_id")
+  workspaceId String?  @map("workspace_id")
+  action      String // "create_alert"/"update_threshold"/"export_report"/"tag_game"/...
+  resource    String // "alert:123"/"game:45"/...
+  diff        Json? // before/after for sensitive changes
+  ip          String?
+  userAgent   String?  @map("user_agent")
+  createdAt   DateTime @default(now()) @map("created_at")
 
-  user User? @relation(fields: [userId], references: [id], onDelete: SetNull)
+  user      User?      @relation(fields: [userId], references: [id], onDelete: SetNull)
+  workspace Workspace? @relation(fields: [workspaceId], references: [id], onDelete: SetNull)
 
   @@index([userId, createdAt(sort: Desc)])
+  @@index([workspaceId, createdAt(sort: Desc)])
   @@index([resource])
   @@map("audit_logs")
 }
@@ -406,20 +458,23 @@ model AuditLog {
 // Phase 2: Subscription (订阅中心 - user-driven notification rules)
 // ============================================================
 model Subscription {
-  id            Int      @id @default(autoincrement())
-  userId        String   @map("user_id")
-  dimension     String   // "platform"/"genre"/"region"/"keyword"/"game"
-  value         String   // e.g. "app_store", "idle", "US", "roguelike", "123" (game id)
-  channel       String   // "feishu"/"wecom"/"email"
-  channelConfig Json     @default("{}") @map("channel_config")  // {"webhook_url": "..."} or {"email": "..."}
-  schedule      String?  // null = realtime, "daily"/"weekly", or cron expression
-  isActive      Boolean  @default(true) @map("is_active")
+  id            Int       @id @default(autoincrement())
+  userId        String    @map("user_id")
+  workspaceId   String    @map("workspace_id")
+  dimension     String // "platform"/"genre"/"region"/"keyword"/"game"
+  value         String // e.g. "app_store", "idle", "US", "roguelike", "123" (game id)
+  channel       String // "feishu"/"wecom"/"email"
+  channelConfig Json      @default("{}") @map("channel_config") // {"webhook_url": "..."} or {"email": "..."}
+  schedule      String? // null = realtime, "daily"/"weekly", or cron expression
+  isActive      Boolean   @default(true) @map("is_active")
   lastSentAt    DateTime? @map("last_sent_at")
-  createdAt     DateTime @default(now()) @map("created_at")
+  createdAt     DateTime  @default(now()) @map("created_at")
 
-  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
 
   @@index([userId])
+  @@index([workspaceId])
   @@index([dimension, value])
   @@map("subscriptions")
 }
@@ -428,13 +483,13 @@ model Subscription {
 // Phase 2: Genre (aggregation/rollup table — refreshed daily)
 // ============================================================
 model Genre {
-  key            String   @id                                // e.g. "idle", "merge"
-  labelZh        String   @map("label_zh")
-  labelEn        String   @map("label_en")
-  iaaBaseline    Int      @default(0) @map("iaa_baseline")
-  hotGamesCount  Int      @default(0) @map("hot_games_count")  // games with overall_score >= 60
-  momentum       Decimal  @default(0) @db.Decimal(6, 3)         // 7d avg delta
-  topGameIds     Int[]    @default([]) @map("top_game_ids")
+  key            String    @id // e.g. "idle", "merge"
+  labelZh        String    @map("label_zh")
+  labelEn        String    @map("label_en")
+  iaaBaseline    Int       @default(0) @map("iaa_baseline")
+  hotGamesCount  Int       @default(0) @map("hot_games_count") // games with overall_score >= 60
+  momentum       Decimal   @default(0) @db.Decimal(6, 3) // 7d avg delta
+  topGameIds     Int[]     @default([]) @map("top_game_ids")
   lastComputedAt DateTime? @map("last_computed_at")
 
   @@map("genres")
@@ -444,22 +499,22 @@ model Genre {
 // Phase 2: Social content samples (video titles + hook phrases)
 // ============================================================
 model SocialContentSample {
-  id          Int      @id @default(autoincrement())
-  gameId      Int      @map("game_id")
-  platform    String   // "douyin"/"tiktok"/"youtube"/"bilibili"
-  contentType String   @map("content_type") // "video"/"post"
-  externalId  String   @map("external_id")
-  title       String
-  authorName  String?  @map("author_name")
-  hashtags    String[] @default([])
-  viewCount   BigInt   @default(0) @map("view_count")
-  likeCount   BigInt?  @map("like_count")
-  commentCount Int?    @map("comment_count")
-  hookPhrase  String?  @map("hook_phrase")  // LLM-extracted
-  url         String?
-  postedAt    DateTime @map("posted_at")
-  scrapedAt   DateTime @default(now()) @map("scraped_at")
-  metadata    Json     @default("{}")
+  id           Int      @id @default(autoincrement())
+  gameId       Int      @map("game_id")
+  platform     String // "douyin"/"tiktok"/"youtube"/"bilibili"
+  contentType  String   @map("content_type") // "video"/"post"
+  externalId   String   @map("external_id")
+  title        String
+  authorName   String?  @map("author_name")
+  hashtags     String[] @default([])
+  viewCount    BigInt   @default(0) @map("view_count")
+  likeCount    BigInt?  @map("like_count")
+  commentCount Int?     @map("comment_count")
+  hookPhrase   String?  @map("hook_phrase") // LLM-extracted
+  url          String?
+  postedAt     DateTime @map("posted_at")
+  scrapedAt    DateTime @default(now()) @map("scraped_at")
+  metadata     Json     @default("{}")
 
   game Game @relation(fields: [gameId], references: [id], onDelete: Cascade)
 
@@ -473,27 +528,30 @@ model SocialContentSample {
 // Phase 3-3: Experiments (A/B test tracker)
 // ============================================================
 model Experiment {
-  id            Int      @id @default(autoincrement())
-  gameId        Int      @map("game_id")
+  id            Int       @id @default(autoincrement())
+  gameId        Int       @map("game_id")
+  workspaceId   String    @map("workspace_id")
   name          String
-  hypothesis    String   @db.Text
-  variantA      Json     @map("variant_a")
-  variantB      Json     @map("variant_b")
-  successMetric String   @map("success_metric")
-  sampleSize    Int?     @map("sample_size")
-  status        String   @default("draft")
-  priority      Int      @default(3) @db.SmallInt
-  expectedLift  Decimal? @map("expected_lift") @db.Decimal(5, 2)
-  actualLift    Decimal? @map("actual_lift") @db.Decimal(5, 2)
-  notes         String?  @db.Text
+  hypothesis    String    @db.Text
+  variantA      Json      @map("variant_a")
+  variantB      Json      @map("variant_b")
+  successMetric String    @map("success_metric")
+  sampleSize    Int?      @map("sample_size")
+  status        String    @default("draft")
+  priority      Int       @default(3) @db.SmallInt
+  expectedLift  Decimal?  @map("expected_lift") @db.Decimal(5, 2)
+  actualLift    Decimal?  @map("actual_lift") @db.Decimal(5, 2)
+  notes         String?   @db.Text
   startedAt     DateTime? @map("started_at")
   completedAt   DateTime? @map("completed_at")
-  createdAt     DateTime @default(now()) @map("created_at")
-  updatedAt     DateTime @default(now()) @updatedAt @map("updated_at")
+  createdAt     DateTime  @default(now()) @map("created_at")
+  updatedAt     DateTime  @default(now()) @updatedAt @map("updated_at")
 
-  game Game @relation(fields: [gameId], references: [id], onDelete: Cascade)
+  game      Game      @relation(fields: [gameId], references: [id], onDelete: Cascade)
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
 
   @@index([gameId, createdAt(sort: Desc)])
+  @@index([workspaceId])
   @@index([status])
   @@map("experiments")
 }

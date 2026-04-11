@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { auth } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
+import { getCurrentWorkspaceId } from "@/lib/workspace";
 
 const VALID_CHANNELS = ["feishu", "wecom", "email"];
 const VALID_SCHEDULES = ["daily", "weekly", "realtime"];
@@ -37,10 +38,15 @@ export async function PATCH(
   }
 
   try {
+    const workspaceId = await getCurrentWorkspaceId();
     const existing = await prisma.subscription.findUnique({
       where: { id: subId },
     });
-    if (!existing || existing.userId !== session.user.id) {
+    if (
+      !existing ||
+      existing.userId !== session.user.id ||
+      existing.workspaceId !== workspaceId
+    ) {
       return NextResponse.json({ error: "not_found" }, { status: 404 });
     }
 
@@ -83,10 +89,15 @@ export async function DELETE(
   }
 
   try {
+    const workspaceId = await getCurrentWorkspaceId();
     const existing = await prisma.subscription.findUnique({
       where: { id: subId },
     });
-    if (!existing || existing.userId !== session.user.id) {
+    if (
+      !existing ||
+      existing.userId !== session.user.id ||
+      existing.workspaceId !== workspaceId
+    ) {
       return NextResponse.json({ error: "not_found" }, { status: 404 });
     }
 

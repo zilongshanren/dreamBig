@@ -546,6 +546,12 @@ def run_asset_analysis(limit: int = 10, screenshots_per_game: int = 2):
     return _run(DB_URL, limit=limit, screenshots_per_game=screenshots_per_game)
 
 
+def run_trailer_analysis(limit: int = 10):
+    """Run trailer hook analysis for top-N high-potential games."""
+    from src.processors.trailer_analysis import run_trailer_analysis as _run
+    return _run(DB_URL, limit=limit)
+
+
 def run_feishu_command_processor():
     """Process pending Feishu bot commands."""
     from src.processors.feishu_command_worker import run_feishu_command_processor as _run
@@ -731,6 +737,9 @@ if __name__ == "__main__":
     elif len(sys.argv) >= 2 and sys.argv[1] == "asset_analysis":
         limit = int(sys.argv[2]) if len(sys.argv) > 2 else 10
         print(run_asset_analysis(limit=limit))
+    elif len(sys.argv) >= 2 and sys.argv[1] == "trailer_analysis":
+        limit = int(sys.argv[2]) if len(sys.argv) > 2 else 10
+        print(run_trailer_analysis(limit=limit))
     elif len(sys.argv) >= 2 and sys.argv[1] == "feishu_worker":
         print(run_feishu_command_processor())
     elif len(sys.argv) >= 3:
@@ -755,5 +764,6 @@ if __name__ == "__main__":
         print("       python -m src.worker genre_weekly")
         print("       python -m src.worker project_advice [limit]")
         print("       python -m src.worker asset_analysis [limit]")
+        print("       python -m src.worker trailer_analysis [limit]")
         print("       python -m src.worker feishu_worker")
         print("Example: python -m src.worker app_store top_free US")

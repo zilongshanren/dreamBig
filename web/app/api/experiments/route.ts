@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
+import { getCurrentWorkspaceId } from "@/lib/workspace";
 
 /**
  * GET /api/experiments
@@ -9,11 +10,12 @@ import { prisma } from "@/lib/prisma";
  */
 export async function GET(req: NextRequest) {
   try {
+    const workspaceId = await getCurrentWorkspaceId();
     const { searchParams } = new URL(req.url);
     const gameId = searchParams.get("gameId");
     const status = searchParams.get("status");
 
-    const where: Record<string, unknown> = {};
+    const where: Record<string, unknown> = { workspaceId };
     if (gameId) where.gameId = parseInt(gameId);
     if (status) where.status = status;
 
@@ -66,9 +68,11 @@ export async function POST(req: NextRequest) {
       );
     }
 
+    const workspaceId = await getCurrentWorkspaceId();
     const exp = await prisma.experiment.create({
       data: {
         gameId,
+        workspaceId,
         name: String(body.name),
         hypothesis: String(body.hypothesis),
         variantA: body.variantA ?? {},

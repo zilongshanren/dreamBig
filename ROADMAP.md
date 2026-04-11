@@ -15,8 +15,9 @@
 |---|---|---|
 | **Phase 1** | 核心闭环（数据 + 评分 + 告警 + LLM 战报 + IAA 顾问） | ✅ 已完成 `7f7a7c3` |
 | **Phase 2** | 扩展能力（订阅中心 + 赛道分析 + 社媒深化 + 认证） | ✅ 已完成 `b8ca9b0` |
-| **Phase 3** | 决策智能（自动立项建议 + 商业化实验引擎 + 多团队） | 🟡 部分完成 `eb6c3cb` (P3-4 未做) |
-| **Phase 4** | 运营工具（OCR + 截图素材分析 + Trailer 拆解） | 🟡 部分完成 `eb6c3cb` (P4-2 未做) |
+| **Phase 3** | 决策智能（自动立项建议 + 商业化实验引擎 + 多团队） | ✅ 已完成（P3-4 在 phase4-finishing 迭代补齐） |
+| **Phase 4** | 运营工具（OCR + 截图素材分析 + Trailer 拆解） | ✅ 已完成（P4-2 在 phase4-finishing 迭代补齐） |
+| **运维 + 测试** | Admin 页 / 分区 / 测试套件 / PRD 对齐 | ✅ 已完成 |
 
 ---
 
@@ -36,20 +37,13 @@
 - **P4-1 视觉分析** — GPT-4o-mini 对截图做 4 类分析（场景/配色/UI/OCR）
 - **P4-3 飞书机器人** — webhook + 5 个命令（/analyze /iaa /similar /trending /help）
 
----
-
-## 剩余未做项
-
-### P3-4 多团队 workspace（跳过理由）
-需要给 10+ 现有表加 `workspace_id` FK，全站查询需要重构加过滤，是一次真正的架构级重构，**无法通过并行 agent 完成**。建议后续单独立专项，有专人负责全局一致性。
-
-### P4-2 Trailer 自动拆解（跳过理由）
-依赖重型基础设施：
-- ffmpeg + yt-dlp 下载视频
-- Whisper large 模型转写（~3GB 模型）
-- 帧抽取 + 视觉分析
-
-建议在有 GPU 资源后单独立项。短期可以考虑接 TikHub 或第三方视频分析 SaaS。
+### phase4-finishing 迭代（剩余项目全部补齐）
+- **P3-4 多团队 workspace** — 新增 `Workspace`/`WorkspaceMember` 表 + 5 张业务表加 `workspace_id` FK + sidebar 切换器 + `lib/workspace.ts` helper + 全站 web 查询补 workspace 过滤。采用混合租户：游戏数据全局共享，业务动作（alerts / subscriptions / experiments / game_tags / audit_logs）按 workspace 隔离。
+- **P4-2 Trailer 自动拆解** — `workers/src/processors/trailer_analysis.py` 用 yt-dlp 下载 + ffmpeg 抽帧（前 3 秒每秒 1 帧 + 关键时间点）+ GPT-4o-mini vision 分析钩子节奏。结果存 `game_asset_analysis` (`asset_type='trailer'`)。优雅降级：缺 ffmpeg/yt-dlp 时跳过。挂到 scheduler 周三 03:00 跑。
+- **运营 admin 页** — `/admin/jobs` 任务监控 + `/admin/games` 主档管理 + `/admin/duplicates` 人工去重 UI（PRD §10.1 / §17 缺口）
+- **`ranking_snapshots` 月分区** — `20260409_ranking_snapshots_partition.sql` 把表转为 RANGE 分区（按 snapshot_date），保留近 12 月 + 未来 3 月分区。幂等迁移。
+- **PRD 评分公式对齐** — prd.txt §11.2 HotScore 公式从 5 维度更新为实际 7 维度，附变更说明。
+- **测试套件** — `workers/tests/` 补 scoring / dedup / alerting / genre_aggregation / review_analysis / embedding 单元测试，用 FakeConnection 隔离 DB。
 
 ---
 

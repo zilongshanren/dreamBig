@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { auth } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
+import { getCurrentWorkspaceId } from "@/lib/workspace";
 
 const VALID_DIMENSIONS = ["platform", "genre", "region", "keyword", "game"];
 const VALID_CHANNELS = ["feishu", "wecom", "email"];
@@ -12,8 +13,9 @@ export async function GET() {
     return NextResponse.json({ error: "unauthorized" }, { status: 401 });
   }
   try {
+    const workspaceId = await getCurrentWorkspaceId();
     const subs = await prisma.subscription.findMany({
-      where: { userId: session.user.id },
+      where: { userId: session.user.id, workspaceId },
       orderBy: { createdAt: "desc" },
     });
     return NextResponse.json(subs);
@@ -55,9 +57,11 @@ export async function POST(req: NextRequest) {
   }
 
   try {
+    const workspaceId = await getCurrentWorkspaceId();
     const sub = await prisma.subscription.create({
       data: {
         userId: session.user.id,
+        workspaceId,
         dimension: body.dimension,
         value,
         channel: body.channel,

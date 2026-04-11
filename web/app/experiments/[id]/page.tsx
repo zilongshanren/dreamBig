@@ -2,6 +2,7 @@ import Link from "next/link";
 import { notFound, redirect } from "next/navigation";
 import { revalidatePath } from "next/cache";
 import { prisma } from "@/lib/prisma";
+import { getCurrentWorkspaceId } from "@/lib/workspace";
 
 export const dynamic = "force-dynamic";
 
@@ -40,10 +41,10 @@ const METRIC_LABELS: Record<string, string> = {
   session_length: "会话时长",
 };
 
-async function getExperiment(id: number) {
+async function getExperiment(id: number, workspaceId: string) {
   try {
-    return await prisma.experiment.findUnique({
-      where: { id },
+    return await prisma.experiment.findFirst({
+      where: { id, workspaceId },
       include: {
         game: {
           select: {
@@ -82,6 +83,12 @@ async function updateStatus(formData: FormData) {
   }
 
   try {
+    const workspaceId = await getCurrentWorkspaceId();
+    const existing = await prisma.experiment.findFirst({
+      where: { id, workspaceId },
+      select: { id: true },
+    });
+    if (!existing) return;
     await prisma.experiment.update({ where: { id }, data });
     revalidatePath(`/experiments/${id}`);
     revalidatePath("/experiments");
@@ -99,6 +106,12 @@ async function updateActualLift(formData: FormData) {
   const actualLift = raw === "" ? null : Number(raw);
 
   try {
+    const workspaceId = await getCurrentWorkspaceId();
+    const existing = await prisma.experiment.findFirst({
+      where: { id, workspaceId },
+      select: { id: true },
+    });
+    if (!existing) return;
     await prisma.experiment.update({
       where: { id },
       data: { actualLift },
@@ -114,6 +127,12 @@ async function deleteExperiment(formData: FormData) {
   const id = parseInt(String(formData.get("id") || ""));
   if (Number.isNaN(id)) return;
   try {
+    const workspaceId = await getCurrentWorkspaceId();
+    const existing = await prisma.experiment.findFirst({
+      where: { id, workspaceId },
+      select: { id: true },
+    });
+    if (!existing) return;
     await prisma.experiment.delete({ where: { id } });
     revalidatePath("/experiments");
   } catch (e) {
@@ -135,7 +154,8 @@ export default async function ExperimentDetailPage({
   const expId = parseInt(id);
   if (!Number.isFinite(expId)) notFound();
 
-  const exp = await getExperiment(expId);
+  const workspaceId = await getCurrentWorkspaceId();
+  const exp = await getExperiment(expId, workspaceId);
   if (!exp) notFound();
 
   const gameName =

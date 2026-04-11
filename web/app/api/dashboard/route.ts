@@ -1,8 +1,10 @@
 import { NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
+import { getCurrentWorkspaceId } from "@/lib/workspace";
 
 export async function GET() {
   try {
+    const workspaceId = await getCurrentWorkspaceId();
     const today = new Date(new Date().toISOString().split("T")[0]);
     const yesterday = new Date(today);
     yesterday.setDate(yesterday.getDate() - 1);
@@ -14,7 +16,10 @@ export async function GET() {
           where: { scoredAt: today, overallScore: { gte: 75 } },
         }),
         prisma.alertEvent.count({
-          where: { triggeredAt: { gte: yesterday } },
+          where: {
+            triggeredAt: { gte: yesterday },
+            alert: { workspaceId },
+          },
         }),
         prisma.scrapeJob.findMany({
           orderBy: { startedAt: "desc" },

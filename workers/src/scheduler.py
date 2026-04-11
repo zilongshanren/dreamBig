@@ -143,6 +143,11 @@ def enqueue_asset_analysis():
     logger.info("Enqueued asset analysis")
 
 
+def enqueue_trailer_analysis():
+    queue.enqueue("src.worker.run_trailer_analysis", job_timeout="60m")
+    logger.info("Enqueued trailer analysis")
+
+
 def enqueue_feishu_worker():
     queue.enqueue("src.worker.run_feishu_command_processor", job_timeout="5m")
     logger.info("Enqueued feishu command processor")
@@ -293,6 +298,9 @@ def main():
 
     # === Tuesday 02:00: Asset analysis (weekly, low-traffic window, cheap but slow) ===
     scheduler.add_job(enqueue_asset_analysis, "cron", day_of_week="tue", hour=2, minute=0, id="asset_analysis")
+
+    # === Wednesday 03:00: Trailer hook analysis (weekly, after asset_analysis, bandwidth-heavy) ===
+    scheduler.add_job(enqueue_trailer_analysis, "cron", day_of_week="wed", hour=3, minute=0, id="trailer_analysis")
 
     # === Every 1 minute: Feishu command processor (bot needs quick response) ===
     scheduler.add_job(enqueue_feishu_worker, "interval", minutes=1, id="feishu_worker")

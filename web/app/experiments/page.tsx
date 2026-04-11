@@ -1,5 +1,6 @@
 import Link from "next/link";
 import { prisma } from "@/lib/prisma";
+import { getCurrentWorkspaceId } from "@/lib/workspace";
 
 export const dynamic = "force-dynamic";
 
@@ -55,9 +56,10 @@ type ExperimentListItem = {
 
 async function getExperiments(
   statusFilter: string | undefined,
+  workspaceId: string,
 ): Promise<ExperimentListItem[]> {
   try {
-    const where: Record<string, unknown> = {};
+    const where: Record<string, unknown> = { workspaceId };
     if (statusFilter && STATUS_LABELS[statusFilter]) {
       where.status = statusFilter;
     }
@@ -96,7 +98,8 @@ export default async function ExperimentsPage({
   searchParams: Promise<{ status?: string }>;
 }) {
   const { status } = await searchParams;
-  const experiments = await getExperiments(status);
+  const workspaceId = await getCurrentWorkspaceId();
+  const experiments = await getExperiments(status, workspaceId);
 
   // Group by status when no filter selected
   const grouped: Record<string, ExperimentListItem[]> = {};

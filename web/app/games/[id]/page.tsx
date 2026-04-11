@@ -6,6 +6,7 @@ import { ScoreRadar } from "@/components/charts/score-radar";
 import { SimilarGamesCard } from "@/components/similar-games-card";
 import { SocialContentCard } from "@/components/social-content-card";
 import { VisualAnalysisCard } from "@/components/visual-analysis-card";
+import { getCurrentWorkspaceId } from "@/lib/workspace";
 
 export const dynamic = "force-dynamic";
 import { RankingChart } from "@/components/charts/ranking-chart";
@@ -41,7 +42,7 @@ const IAA_GRADE_COLORS: Record<string, string> = {
   D: "bg-red-500 text-white",
 };
 
-async function getGame(id: number) {
+async function getGame(id: number, workspaceId: string) {
   // Try full query first with new relations
   try {
     const game = await prisma.game.findUnique({
@@ -67,7 +68,8 @@ async function getGame(id: number) {
           orderBy: { signalDate: "desc" },
           take: 7,
         },
-        gameTags: true,
+        // Workspace-scoped tags only
+        gameTags: { where: { workspaceId } },
         gameReport: true,
         reviewTopicSummaries: {
           orderBy: { computedAt: "desc" },
@@ -102,7 +104,7 @@ async function getGame(id: number) {
             orderBy: { signalDate: "desc" },
             take: 7,
           },
-          gameTags: true,
+          gameTags: { where: { workspaceId } },
         },
       });
       return game;
@@ -118,7 +120,8 @@ export default async function GameDetailPage({
   params: Promise<{ id: string }>;
 }) {
   const { id } = await params;
-  const game = await getGame(parseInt(id));
+  const workspaceId = await getCurrentWorkspaceId();
+  const game = await getGame(parseInt(id), workspaceId);
 
   if (!game) return notFound();
 

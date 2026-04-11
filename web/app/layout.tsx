@@ -2,6 +2,8 @@ import type { Metadata } from "next";
 import Link from "next/link";
 import "./globals.css";
 import { MobileNav } from "@/components/mobile-nav";
+import { WorkspaceSwitcher } from "@/components/workspace-switcher";
+import { getCurrentWorkspaceId, listUserWorkspaces } from "@/lib/workspace";
 
 export const metadata: Metadata = {
   title: "DreamBig - 游戏榜单监控",
@@ -24,11 +26,23 @@ const NAV_ITEMS = [
   { href: "/account", label: "账户", icon: "👤" },
 ];
 
-export default function RootLayout({
+export default async function RootLayout({
   children,
 }: {
   children: React.ReactNode;
 }) {
+  // workspace state for the sidebar switcher (fails open on first render / signed-out users)
+  let workspaces: Awaited<ReturnType<typeof listUserWorkspaces>> = [];
+  let currentWorkspaceId = "default";
+  try {
+    [workspaces, currentWorkspaceId] = await Promise.all([
+      listUserWorkspaces(),
+      getCurrentWorkspaceId(),
+    ]);
+  } catch {
+    /* unauthenticated */
+  }
+
   return (
     <html lang="zh-CN" className="h-full">
       <body className="h-full bg-gray-50 text-gray-900 antialiased" style={{ fontFamily: '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif' }}>
@@ -39,6 +53,10 @@ export default function RootLayout({
               <h1 className="text-xl font-bold tracking-tight">DreamBig</h1>
               <p className="text-xs text-gray-400 mt-1">IAA 爆品发现平台</p>
             </div>
+            <WorkspaceSwitcher
+              workspaces={workspaces}
+              currentId={currentWorkspaceId}
+            />
             <nav className="flex-1 py-4">
               {NAV_ITEMS.map((item) => (
                 <Link

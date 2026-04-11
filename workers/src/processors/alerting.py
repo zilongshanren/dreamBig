@@ -611,15 +611,18 @@ class AlertEngine:
                 mapping[at] = row[0]
                 continue
 
+            # System alerts always live in the "default" workspace.
+            # Cross-workspace fan-out happens at delivery time via Subscription rows.
             row = conn.execute(
                 """
                 INSERT INTO alerts
-                  (name, alert_type, severity, conditions,
+                  (workspace_id, name, alert_type, severity, conditions,
                    notify_channel, is_active, cooldown_hours)
-                VALUES (%s, %s, %s, %s::jsonb, %s, %s, %s)
+                VALUES (%s, %s, %s, %s, %s::jsonb, %s, %s, %s)
                 RETURNING id
                 """,
                 (
+                    "default",
                     system_name,
                     at.value,
                     Severity.P2.value,

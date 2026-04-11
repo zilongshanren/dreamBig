@@ -84,6 +84,61 @@ class VisionClient:
 
         return {"content": content, "tokens_in": tokens_in, "tokens_out": tokens_out}
 
+    async def analyze_images(
+        self,
+        image_urls: list[str],
+        system_prompt: str,
+        user_prompt: str,
+        response_format: dict | None = None,  # {"type": "json_object"}
+        max_tokens: int = 800,
+        detail: str = "low",
+    ) -> dict:
+        """Multi-image analysis (e.g. a handful of trailer frames in one call).
+
+        Each entry in ``image_urls`` may be a regular https URL or a
+        ``data:image/jpeg;base64,...`` data URL — both are accepted by
+        OpenAI's chat completions API. Returns the same shape as
+        :meth:`analyze_image`.
+        """
+        if not image_urls:
+            raise ValueError("analyze_images requires at least one image URL")
+
+        client = self._get_client()
+        content_parts: list[dict] = [{"type": "text", "text": user_prompt}]
+        for url in image_urls:
+            content_parts.append(
+                {
+                    "type": "image_url",
+                    "image_url": {"url": url, "detail": detail},
+                }
+            )
+
+        messages = [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": content_parts},
+        ]
+
+        kwargs: dict = {
+            "model": self.model,
+            "messages": messages,
+            "max_tokens": max_tokens,
+        }
+        if response_format:
+            kwargs["response_format"] = response_format
+
+        resp = await client.chat.completions.create(**kwargs)
+        content = resp.choices[0].message.content or ""
+        tokens_in = resp.usage.prompt_tokens if resp.usage else 0
+        tokens_out = resp.usage.completion_tokens if resp.usage else 0
+
+        self.usage.input_tokens += tokens_in
+        self.usage.output_tokens += tokens_out
+        self.usage.cost_usd += (
+            tokens_in * VISION_PRICE_IN + tokens_out * VISION_PRICE_OUT
+        )
+
+        return {"content": content, "tokens_in": tokens_in, "tokens_out": tokens_out}
+
     async def close(self):
         if self._client:
             await self._client.close()

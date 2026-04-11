@@ -561,11 +561,23 @@ D：不建议
 爆款预警分
 text
 HotScore =
-0.35 * RankMomentum
-+ 0.20 * ReviewVelocity
-+ 0.20 * SocialVelocity
-+ 0.15 * RatingHealth
-+ 0.10 * UpdateImpact
+  0.25 * RankingVelocity     // 14 天榜单线性回归动量
+  + 0.20 * GenreFit           // 品类 IAA 适配度（查表）
+  + 0.15 * SocialBuzz         // 7 天社媒声量加权
+  + 0.15 * CrossPlatform      // 跨平台覆盖度
+  + 0.10 * RatingQuality      // 评分 + 评论量综合
+  + 0.10 * CompetitionGap     // 同品类已 IAA 化数量反比
+  + 0.05 * AdActivity         // 14 天广告创意数量
+
+说明（与 PRD v1.0 初版的偏离）：
+- v1.0 初版的 5 维度（RankMomentum/ReviewVelocity/SocialVelocity/RatingHealth/UpdateImpact）在 Phase 1 实现时被重构为更精细的 7 维度。
+- 新增 GenreFit：复用 shared/genres.json 的 iaa_score 查表，避免对所有品类一视同仁。
+- 新增 CrossPlatform：游戏在多平台同时上线 = 通用吸引力强信号。
+- 新增 CompetitionGap：同品类已 IAA 化数量越少，立项窗口越大。
+- 新增 AdActivity：第三方已经在投同类游戏 = 市场已被验证。
+- ReviewVelocity 被吸收进 RatingQuality（评论量是其分量之一）。
+- UpdateImpact 暂未实现，规划中（依赖更新事件时间轴功能）。
+- 实现版本字段：potential_scores.algorithm_version='v1'，未来变更需 bump。
 
 IAA适配分
 text
@@ -619,7 +631,7 @@ ReputationScore =
 是否可人工修正标签
 14. MVP 功能清单
 14.1 必做
-平台接入：Steam / App Store / Google Play / TapTap
+平台接入：Steam / App Store / Google Play / TapTap（实际已扩展到 10+ 平台，含 Poki/CrazyGames/微信小游戏/4399 等）
 游戏主档管理
 榜单抓取
 评论抓取

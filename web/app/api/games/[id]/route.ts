@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
+import { getCurrentWorkspaceId } from "@/lib/workspace";
 
 export async function GET(
   req: NextRequest,
@@ -8,6 +9,7 @@ export async function GET(
   try {
     const { id } = await params;
     const gameId = parseInt(id);
+    const workspaceId = await getCurrentWorkspaceId();
 
     const game = await prisma.game.findUnique({
       where: { id: gameId },
@@ -32,7 +34,8 @@ export async function GET(
           orderBy: { signalDate: "desc" },
           take: 14,
         },
-        gameTags: true,
+        // Only return tags belonging to the current workspace
+        gameTags: { where: { workspaceId } },
       },
     });
 
@@ -53,20 +56,27 @@ export async function PATCH(
   try {
     const { id } = await params;
     const gameId = parseInt(id);
+    const workspaceId = await getCurrentWorkspaceId();
     const body = await req.json();
 
-    // Support adding/removing tags
+    // Support adding/removing tags (workspace-scoped)
     if (body.addTag) {
       await prisma.gameTag.upsert({
-        where: { gameId_tag: { gameId, tag: body.addTag } },
-        create: { gameId, tag: body.addTag, note: body.note },
+        where: {
+          gameId_tag_workspaceId: {
+            gameId,
+            tag: body.addTag,
+            workspaceId,
+          },
+        },
+        create: { gameId, tag: body.addTag, workspaceId, note: body.note },
         update: { note: body.note },
       });
     }
 
     if (body.removeTag) {
       await prisma.gameTag.deleteMany({
-        where: { gameId, tag: body.removeTag },
+        where: { gameId, tag: body.removeTag, workspaceId },
       });
     }
 

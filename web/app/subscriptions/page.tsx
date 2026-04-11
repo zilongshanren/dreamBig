@@ -1,6 +1,7 @@
 import { revalidatePath } from "next/cache";
 import { auth } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
+import { getCurrentWorkspaceId } from "@/lib/workspace";
 
 export const dynamic = "force-dynamic";
 
@@ -27,10 +28,10 @@ const SCHEDULE_LABELS: Record<string, string> = {
 // ============================================================
 // Data loaders
 // ============================================================
-async function getSubscriptions(userId: string) {
+async function getSubscriptions(userId: string, workspaceId: string) {
   try {
     return await prisma.subscription.findMany({
-      where: { userId },
+      where: { userId, workspaceId },
       orderBy: { createdAt: "desc" },
     });
   } catch {
@@ -64,9 +65,11 @@ async function createSubscription(formData: FormData) {
   }
 
   try {
+    const workspaceId = await getCurrentWorkspaceId();
     await prisma.subscription.create({
       data: {
         userId: session.user.id,
+        workspaceId,
         dimension,
         value,
         channel,
@@ -90,8 +93,14 @@ async function toggleSubscription(formData: FormData) {
   if (Number.isNaN(id)) return;
 
   try {
+    const workspaceId = await getCurrentWorkspaceId();
     const existing = await prisma.subscription.findUnique({ where: { id } });
-    if (!existing || existing.userId !== session.user.id) return;
+    if (
+      !existing ||
+      existing.userId !== session.user.id ||
+      existing.workspaceId !== workspaceId
+    )
+      return;
     await prisma.subscription.update({
       where: { id },
       data: { isActive: nextActive },
@@ -111,8 +120,14 @@ async function deleteSubscription(formData: FormData) {
   if (Number.isNaN(id)) return;
 
   try {
+    const workspaceId = await getCurrentWorkspaceId();
     const existing = await prisma.subscription.findUnique({ where: { id } });
-    if (!existing || existing.userId !== session.user.id) return;
+    if (
+      !existing ||
+      existing.userId !== session.user.id ||
+      existing.workspaceId !== workspaceId
+    )
+      return;
     await prisma.subscription.delete({ where: { id } });
     revalidatePath("/subscriptions");
   } catch (e) {
@@ -141,7 +156,8 @@ export default async function SubscriptionsPage() {
     );
   }
 
-  const subs = await getSubscriptions(userId);
+  const workspaceId = await getCurrentWorkspaceId();
+  const subs = await getSubscriptions(userId, workspaceId);
 
   return (
     <div>

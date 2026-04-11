@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
+import { getCurrentWorkspaceId } from "@/lib/workspace";
 
 export async function PATCH(
   req: NextRequest,
@@ -7,7 +8,17 @@ export async function PATCH(
 ) {
   try {
     const { id } = await params;
+    const workspaceId = await getCurrentWorkspaceId();
     const body = await req.json();
+
+    // Verify the alert belongs to the current workspace before updating
+    const existing = await prisma.alert.findFirst({
+      where: { id: parseInt(id), workspaceId },
+      select: { id: true },
+    });
+    if (!existing) {
+      return NextResponse.json({ error: "Not found" }, { status: 404 });
+    }
 
     const alert = await prisma.alert.update({
       where: { id: parseInt(id) },
@@ -34,6 +45,15 @@ export async function DELETE(
 ) {
   try {
     const { id } = await params;
+    const workspaceId = await getCurrentWorkspaceId();
+
+    const existing = await prisma.alert.findFirst({
+      where: { id: parseInt(id), workspaceId },
+      select: { id: true },
+    });
+    if (!existing) {
+      return NextResponse.json({ error: "Not found" }, { status: 404 });
+    }
 
     await prisma.alertEvent.deleteMany({
       where: { alertId: parseInt(id) },

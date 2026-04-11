@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
+import { getCurrentWorkspaceId } from "@/lib/workspace";
 
 const UPDATABLE_FIELDS = [
   "name",
@@ -56,6 +57,15 @@ export async function PATCH(
       }
     }
 
+    const workspaceId = await getCurrentWorkspaceId();
+    const existing = await prisma.experiment.findFirst({
+      where: { id: expId, workspaceId },
+      select: { id: true },
+    });
+    if (!existing) {
+      return NextResponse.json({ error: "Not found" }, { status: 404 });
+    }
+
     const exp = await prisma.experiment.update({
       where: { id: expId },
       data: updateData,
@@ -85,6 +95,14 @@ export async function DELETE(
         { error: "Invalid experiment id" },
         { status: 400 },
       );
+    }
+    const workspaceId = await getCurrentWorkspaceId();
+    const existing = await prisma.experiment.findFirst({
+      where: { id: expId, workspaceId },
+      select: { id: true },
+    });
+    if (!existing) {
+      return NextResponse.json({ error: "Not found" }, { status: 404 });
     }
     await prisma.experiment.delete({ where: { id: expId } });
     return NextResponse.json({ ok: true });
