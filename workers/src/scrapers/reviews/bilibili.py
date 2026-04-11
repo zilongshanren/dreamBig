@@ -1,37 +1,30 @@
 """Bilibili video comment scraper — review proxy for WeChat mini-games.
 
-WeChat's own review tab is a closed ecosystem, so we proxy user opinion via
-Bilibili comments: for a given game name we find the most-viewed videos
-tagged with the name, then pull the top comments from each via Bilibili's
-public reply API. Comments are stored as Review rows against the game's
-platform_listing, then flow through the existing sentiment / topic
-clustering pipeline.
+Uses Playwright (headless Chromium) for the whole scrape flow:
 
-Bilibili anti-bot notes (as of 2024):
-  - ``/x/web-interface/search/type`` is protected by WBI signing. Unsigned
-    requests get ``412 Precondition Failed`` after a handful of calls.
-  - ``/x/v2/reply`` (comments) is public but expects a realistic browser
-    session (buvid3 cookie from bilibili.com homepage) and occasionally
-    returns non-zero ``code`` even on HTTP 200.
+  1. Open https://search.bilibili.com/video?keyword=XXX in a real browser.
+  2. Intercept the browser's own /x/web-interface/wbi/search/type XHR response
+     (the browser signs WBI internally — we just grab the JSON).
+  3. For each matching video, call the public reply API via ``page.request``
+     so the call inherits the page's cookies (buvid3 etc.), bypassing the
+     rate-limit triggers that hit plain httpx from the same IP.
 
-We handle both by (1) bootstrapping cookies from a real GET on
-www.bilibili.com, (2) fetching WBI keys from ``/nav`` and signing search
-requests, and (3) logging Bilibili's JSON ``code`` / ``message`` at INFO so
-failures don't disappear into debug silence.
+This replaces the pure-httpx + manual WBI approach because Bilibili's
+anti-bot on /search/type from a datacenter HK IP is aggressive enough
+that unsigned requests get 412 even after cookie bootstrap. A real
+browser session sails through.
 
 Pipeline:
-  1. Bootstrap cookies (once per scraper instance).
-  2. Search Bilibili (WBI-signed) for videos matching the game name.
-  3. For the top N videos (by play count), fetch top M comments each.
-  4. Emit ReviewEntry objects. ``external_id`` is bvid:reply_id so the
-     same comment won't be inserted twice.
+  1. Lazy Playwright init (single browser + context per scraper instance).
+  2. Search → capture API response from the page's XHR.
+  3. For each of the top-N videos, fetch comments via page.request.
+  4. Emit ReviewEntry rows. external_id is bvid:reply_id for stable dedup.
+  5. close() cleans up the browser.
 """
 
 from __future__ import annotations
 
-import hashlib
 import logging
-import time
 import urllib.parse
 from datetime import datetime
 from typing import Any
@@ -41,127 +34,113 @@ from .base import BaseReviewScraper, ReviewEntry
 logger = logging.getLogger(__name__)
 
 
-# How many Bilibili videos to pull comments from per game
 DEFAULT_VIDEOS_PER_GAME = 5
-# How many comments to pull per video
 DEFAULT_COMMENTS_PER_VIDEO = 40
-# Minimum comment length to bother indexing (filters "666" / "好" etc).
-# 3 chars is lenient enough for Chinese短评 like "真好玩".
-MIN_COMMENT_LEN = 3
+MIN_COMMENT_LEN = 3  # keep "真好玩" etc.
 
 
-# WBI signing — fixed permutation table published in Bilibili's web client
-_MIXIN_KEY_ENC_TAB: list[int] = [
-    46, 47, 18, 2, 53, 8, 23, 32, 15, 50, 10, 31, 58, 3, 45, 35, 27, 43, 5, 49,
-    33, 9, 42, 19, 29, 28, 14, 39, 12, 38, 41, 13, 37, 48, 7, 16, 24, 55, 40,
-    61, 26, 17, 0, 1, 60, 51, 30, 4, 22, 25, 54, 21, 56, 59, 6, 63, 57, 62, 11,
-    36, 20, 34, 44, 52,
-]
-
-
-def _get_mixin_key(orig: str) -> str:
-    """Apply the fixed permutation to (img_key + sub_key) and take first 32."""
-    return "".join(orig[i] for i in _MIXIN_KEY_ENC_TAB if i < len(orig))[:32]
-
-
-def _wbi_sign(params: dict[str, Any], img_key: str, sub_key: str) -> dict[str, str]:
-    """Sign a params dict for Bilibili's wbi-protected endpoints.
-
-    Adds ``wts`` (timestamp) and ``w_rid`` (md5 signature). Returns a new
-    dict with all values coerced to strings — ready for httpx params.
-    """
-    mixin_key = _get_mixin_key(img_key + sub_key)
-    # Strip characters Bilibili's JS rejects before signing
-    bad_chars = "!'()*"
-
-    def clean(v: Any) -> str:
-        return str(v).translate(str.maketrans("", "", bad_chars))
-
-    signed = {k: clean(v) for k, v in params.items()}
-    signed["wts"] = str(int(time.time()))
-
-    query = urllib.parse.urlencode(sorted(signed.items()))
-    signed["w_rid"] = hashlib.md5((query + mixin_key).encode("utf-8")).hexdigest()
-    return signed
+_USER_AGENT = (
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+    "AppleWebKit/537.36 (KHTML, like Gecko) "
+    "Chrome/124.0.0.0 Safari/537.36"
+)
 
 
 class BilibiliReviewScraper(BaseReviewScraper):
-    """Scrapes Bilibili comments as a proxy for WeChat mini-game reviews."""
+    """Scrapes Bilibili comments via headless Chromium + page-scoped requests."""
 
     platform = "bilibili_review"
-    rate_limit = 2.5
+    rate_limit = 1.0  # we're paced by Playwright page loads anyway
 
     def __init__(self, proxy_url: str | None = None) -> None:
         super().__init__(proxy_url)
-        self._wbi_keys: tuple[str, str] | None = None
-        self._bootstrapped: bool = False
+        self._pw: Any = None
+        self._browser: Any = None
+        self._ctx: Any = None
 
     # ------------------------------------------------------------------
-    # Session bootstrapping
+    # Playwright lifecycle
     # ------------------------------------------------------------------
-    async def _bootstrap(self) -> None:
-        """Visit bilibili.com once to collect cookies (buvid3 etc.)."""
-        if self._bootstrapped:
-            return
-        client = await self.get_client()
+    async def _ensure_playwright(self) -> bool:
+        if self._ctx is not None:
+            return True
         try:
-            await client.get(
-                "https://www.bilibili.com/",
-                headers={
-                    "Accept": "text/html,application/xhtml+xml",
-                    "Accept-Language": "zh-CN,zh;q=0.9",
-                },
-                timeout=15,
-            )
-        except Exception as e:
-            logger.warning(f"[bilibili_review] cookie bootstrap failed: {e}")
-        else:
-            logger.info("[bilibili_review] cookies bootstrapped")
-        self._bootstrapped = True
-
-    async def _get_wbi_keys(self) -> tuple[str, str] | None:
-        """Fetch WBI img_key / sub_key from bilibili's nav API.
-
-        Keys rotate daily but are cached per scraper instance. Returns
-        None on failure — the caller should skip the signed path.
-        """
-        if self._wbi_keys:
-            return self._wbi_keys
-        client = await self.get_client()
-        try:
-            resp = await client.get(
-                "https://api.bilibili.com/x/web-interface/nav",
-                headers={
-                    "Accept": "application/json",
-                    "Referer": "https://www.bilibili.com/",
-                    "Origin": "https://www.bilibili.com",
-                },
-                timeout=15,
-            )
-            resp.raise_for_status()
-            data = resp.json()
-        except Exception as e:
-            logger.warning(f"[bilibili_review] nav fetch failed: {e}")
-            return None
-
-        wbi_img = (data.get("data") or {}).get("wbi_img") or {}
-        img_url = wbi_img.get("img_url") or ""
-        sub_url = wbi_img.get("sub_url") or ""
-        if not img_url or not sub_url:
+            from playwright.async_api import async_playwright  # type: ignore
+        except ImportError:
             logger.warning(
-                f"[bilibili_review] nav returned no wbi_img "
-                f"(code={data.get('code')}, message={data.get('message')!r})"
+                "[bilibili_review] playwright not installed — scraper disabled. "
+                "Rebuild the workers image to install chromium."
             )
-            return None
+            return False
 
-        img_key = img_url.rsplit("/", 1)[-1].split(".")[0]
-        sub_key = sub_url.rsplit("/", 1)[-1].split(".")[0]
-        self._wbi_keys = (img_key, sub_key)
-        logger.info(f"[bilibili_review] got WBI keys (img={img_key[:8]}..., sub={sub_key[:8]}...)")
-        return self._wbi_keys
+        try:
+            self._pw = await async_playwright().start()
+            self._browser = await self._pw.chromium.launch(
+                headless=True,
+                args=[
+                    "--no-sandbox",
+                    "--disable-dev-shm-usage",
+                    "--disable-blink-features=AutomationControlled",
+                    "--disable-gpu",
+                ],
+            )
+            self._ctx = await self._browser.new_context(
+                user_agent=_USER_AGENT,
+                locale="zh-CN",
+                viewport={"width": 1280, "height": 800},
+                extra_http_headers={
+                    "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
+                },
+            )
+            # Prime cookies with a homepage visit so buvid3 etc. land in the jar
+            try:
+                page = await self._ctx.new_page()
+                await page.goto(
+                    "https://www.bilibili.com/",
+                    wait_until="domcontentloaded",
+                    timeout=20_000,
+                )
+                try:
+                    await page.wait_for_load_state("networkidle", timeout=5_000)
+                except Exception:
+                    pass
+                await page.close()
+                logger.info("[bilibili_review] playwright session ready")
+                return True
+            except Exception as e:
+                logger.warning(f"[bilibili_review] homepage bootstrap failed: {e}")
+                return True  # continue anyway, some calls may still work
+        except Exception as e:
+            logger.error(f"[bilibili_review] playwright launch failed: {e}")
+            await self._teardown_playwright()
+            return False
+
+    async def _teardown_playwright(self) -> None:
+        for attr in ("_ctx", "_browser"):
+            obj = getattr(self, attr, None)
+            if obj is None:
+                continue
+            try:
+                await obj.close()
+            except Exception:
+                pass
+            setattr(self, attr, None)
+        if self._pw is not None:
+            try:
+                await self._pw.stop()
+            except Exception:
+                pass
+            self._pw = None
+
+    async def close(self) -> None:
+        await self._teardown_playwright()
+        try:
+            await super().close()
+        except Exception:
+            pass
 
     # ------------------------------------------------------------------
-    # Main scraper entry point
+    # Public entry point
     # ------------------------------------------------------------------
     async def scrape_reviews(
         self,
@@ -170,16 +149,12 @@ class BilibiliReviewScraper(BaseReviewScraper):
         limit: int = DEFAULT_COMMENTS_PER_VIDEO * DEFAULT_VIDEOS_PER_GAME,
         lang: str = "zh",
     ) -> list[ReviewEntry]:
-        """Scrape Bilibili video comments for a given game.
-
-        ``platform_id`` here is the game name (Chinese preferred) — not a
-        numeric ID, because Bilibili has no concept of a "game row".
-        """
         game_name = platform_id.strip()
         if not game_name:
             return []
 
-        await self._bootstrap()
+        if not await self._ensure_playwright():
+            return []
 
         videos_per_game = min(
             DEFAULT_VIDEOS_PER_GAME,
@@ -209,7 +184,7 @@ class BilibiliReviewScraper(BaseReviewScraper):
                 all_reviews.extend(rv)
             except Exception as e:
                 logger.warning(
-                    f"[bilibili_review] comments fetch failed for {bvid}: {e}"
+                    f"[bilibili_review] comment fetch failed for {bvid}: {e}"
                 )
             if len(all_reviews) >= limit:
                 break
@@ -221,70 +196,158 @@ class BilibiliReviewScraper(BaseReviewScraper):
         return all_reviews[:limit]
 
     # ------------------------------------------------------------------
-    # Search (WBI-signed)
+    # Search: let the browser sign WBI; we intercept the response.
     # ------------------------------------------------------------------
     async def _search_videos(
         self, keyword: str, limit: int
     ) -> list[dict[str, Any]]:
-        """Search Bilibili for videos matching `keyword`.
-
-        Signs the request with WBI so we don't get 412'd after a handful
-        of calls. Falls back to unsigned request if key fetch fails —
-        first call may still work even unsigned.
-        """
-        import re
-
-        client = await self.get_client()
-        await self.throttle()
-
-        params = {
-            "keyword": f"{keyword} 小游戏",
-            "search_type": "video",
-            "order": "click",  # most viewed
-            "page": 1,
-        }
-
-        keys = await self._get_wbi_keys()
-        if keys:
-            img_key, sub_key = keys
-            params = _wbi_sign(params, img_key, sub_key)
-
+        assert self._ctx is not None
+        page = await self._ctx.new_page()
         try:
-            resp = await client.get(
-                "https://api.bilibili.com/x/web-interface/wbi/search/type",
-                params=params,
+            search_url = (
+                "https://search.bilibili.com/video?keyword="
+                + urllib.parse.quote(f"{keyword} 小游戏")
+                + "&order=click&duration=0&tids=0"
+            )
+
+            # Navigate + wait for the browser's own /search/type XHR
+            try:
+                async with page.expect_response(
+                    lambda r: "search/type" in r.url
+                    and r.request.method == "GET",
+                    timeout=20_000,
+                ) as resp_info:
+                    await page.goto(
+                        search_url,
+                        wait_until="domcontentloaded",
+                        timeout=25_000,
+                    )
+                resp = await resp_info.value
+                try:
+                    data = await resp.json()
+                except Exception:
+                    body = await resp.text()
+                    logger.warning(
+                        f"[bilibili_review] non-JSON search response ({resp.status}): "
+                        f"{body[:200]}"
+                    )
+                    return []
+            except Exception as e:
+                logger.warning(
+                    f"[bilibili_review] search XHR wait failed for '{keyword}': {e}"
+                )
+                # Fallback: scrape BVIDs from the rendered DOM
+                return await self._search_videos_dom(page, limit)
+
+            if data.get("code") != 0:
+                logger.warning(
+                    f"[bilibili_review] search API code={data.get('code')} "
+                    f"message={data.get('message')!r}"
+                )
+                return await self._search_videos_dom(page, limit)
+
+            results = (data.get("data") or {}).get("result") or []
+            # Strip HTML em tags from titles
+            import re
+            for r in results:
+                if isinstance(r.get("title"), str):
+                    r["title"] = re.sub(r"<[^>]+>", "", r["title"])
+            logger.info(
+                f"[bilibili_review] search '{keyword}' → {len(results)} videos"
+            )
+            return results[:limit]
+        finally:
+            try:
+                await page.close()
+            except Exception:
+                pass
+
+    async def _search_videos_dom(self, page: Any, limit: int) -> list[dict[str, Any]]:
+        """Fallback: extract BVIDs from the search page DOM when XHR intercept fails."""
+        try:
+            await page.wait_for_selector(
+                'a[href*="/video/BV"]', timeout=8_000
+            )
+        except Exception:
+            pass
+        try:
+            videos = await page.evaluate(
+                r"""() => {
+                    const out = [];
+                    const seen = new Set();
+                    const anchors = document.querySelectorAll('a[href*="/video/BV"]');
+                    for (const a of anchors) {
+                        const m = a.href.match(/\/video\/(BV[\w]+)/);
+                        if (!m) continue;
+                        const bvid = m[1];
+                        if (seen.has(bvid)) continue;
+                        seen.add(bvid);
+
+                        // Find nearest meaningful text-containing ancestor for title
+                        let el = a;
+                        for (let i = 0; i < 6 && el; i++) {
+                            const txt = (el.innerText || el.textContent || '').trim();
+                            if (txt.length > 5) { break; }
+                            el = el.parentElement;
+                        }
+                        const title = ((el?.innerText || a.innerText || '').trim().split('\n')[0] || '').slice(0, 200);
+                        out.push({bvid, title, aid: null});
+                        if (out.length >= 50) break;
+                    }
+                    return out;
+                }"""
+            )
+        except Exception as e:
+            logger.debug(f"[bilibili_review] DOM fallback eval failed: {e}")
+            return []
+
+        if not videos:
+            return []
+
+        # Need aid for comment API — resolve each BVID via the view endpoint
+        resolved: list[dict[str, Any]] = []
+        for v in videos[: limit * 2]:  # resolve a few extras in case some fail
+            aid = await self._bvid_to_aid(v["bvid"])
+            if aid:
+                resolved.append(
+                    {
+                        "aid": aid,
+                        "bvid": v["bvid"],
+                        "title": v.get("title", ""),
+                        "play": 0,
+                    }
+                )
+            if len(resolved) >= limit:
+                break
+        logger.info(
+            f"[bilibili_review] DOM fallback resolved {len(resolved)} videos"
+        )
+        return resolved
+
+    async def _bvid_to_aid(self, bvid: str) -> int | None:
+        """Look up numeric aid for a bvid via Bilibili's view endpoint."""
+        assert self._ctx is not None
+        try:
+            resp = await self._ctx.request.get(
+                "https://api.bilibili.com/x/web-interface/view",
+                params={"bvid": bvid},
                 headers={
                     "Accept": "application/json",
                     "Referer": "https://www.bilibili.com/",
-                    "Origin": "https://www.bilibili.com",
+                    "User-Agent": _USER_AGENT,
                 },
-                timeout=15,
+                timeout=15_000,
             )
-            resp.raise_for_status()
-            data = resp.json()
+            data = await resp.json()
+            if data.get("code") != 0:
+                return None
+            return int((data.get("data") or {}).get("aid") or 0) or None
         except Exception as e:
-            logger.warning(f"[bilibili_review] search failed for '{keyword}': {e}")
-            return []
-
-        code = data.get("code", -1)
-        if code != 0:
-            logger.warning(
-                f"[bilibili_review] search non-zero for '{keyword}': "
-                f"code={code} message={data.get('message', '')!r}"
-            )
-            return []
-
-        results = (data.get("data") or {}).get("result") or []
-        for r in results:
-            if isinstance(r.get("title"), str):
-                r["title"] = re.sub(r"<[^>]+>", "", r["title"])
-        logger.info(
-            f"[bilibili_review] search '{keyword}' → {len(results)} videos"
-        )
-        return results[:limit]
+            logger.debug(f"[bilibili_review] view lookup failed for {bvid}: {e}")
+            return None
 
     # ------------------------------------------------------------------
-    # Comment fetch (no WBI needed — public endpoint)
+    # Comment fetch via page-scoped requests (inherits cookies).
     # ------------------------------------------------------------------
     async def _fetch_video_comments(
         self,
@@ -294,35 +357,31 @@ class BilibiliReviewScraper(BaseReviewScraper):
         video_title: str,
         limit: int,
     ) -> list[ReviewEntry]:
-        """Fetch top comments of a single video.
-
-        Tries the legacy ``/x/v2/reply`` endpoint first, then the newer
-        ``/x/v2/reply/main`` endpoint as a fallback — different videos
-        respond to different endpoints depending on their config.
-        """
-        client = await self.get_client()
+        assert self._ctx is not None
         replies_raw: list[dict[str, Any]] = []
 
-        # --- attempt 1: /x/v2/reply (sorted by likes) ---
-        await self.throttle()
+        headers = {
+            "Accept": "application/json",
+            "Referer": f"https://www.bilibili.com/video/{bvid}",
+            "Origin": "https://www.bilibili.com",
+            "User-Agent": _USER_AGENT,
+        }
+
+        # Attempt 1: legacy /x/v2/reply sorted by likes
         try:
-            resp = await client.get(
+            resp = await self._ctx.request.get(
                 "https://api.bilibili.com/x/v2/reply",
                 params={
-                    "type": 1,  # video
+                    "type": 1,
                     "oid": aid,
                     "pn": 1,
                     "ps": min(limit, 49),
-                    "sort": 2,  # by likes
+                    "sort": 2,
                 },
-                headers={
-                    "Accept": "application/json",
-                    "Referer": f"https://www.bilibili.com/video/{bvid}",
-                    "Origin": "https://www.bilibili.com",
-                },
-                timeout=15,
+                headers=headers,
+                timeout=15_000,
             )
-            data = resp.json()
+            data = await resp.json()
             code = data.get("code", -1)
             if code == 0:
                 replies_raw = (data.get("data") or {}).get("replies") or []
@@ -334,27 +393,22 @@ class BilibiliReviewScraper(BaseReviewScraper):
         except Exception as e:
             logger.info(f"[bilibili_review] /reply error for {bvid}: {e}")
 
-        # --- attempt 2: /x/v2/reply/main (newer endpoint) ---
+        # Attempt 2: newer /x/v2/reply/main
         if not replies_raw:
-            await self.throttle()
             try:
-                resp = await client.get(
+                resp = await self._ctx.request.get(
                     "https://api.bilibili.com/x/v2/reply/main",
                     params={
                         "type": 1,
                         "oid": aid,
-                        "mode": 3,  # hot
+                        "mode": 3,
                         "next": 0,
                         "ps": min(limit, 20),
                     },
-                    headers={
-                        "Accept": "application/json",
-                        "Referer": f"https://www.bilibili.com/video/{bvid}",
-                        "Origin": "https://www.bilibili.com",
-                    },
-                    timeout=15,
+                    headers=headers,
+                    timeout=15_000,
                 )
-                data = resp.json()
+                data = await resp.json()
                 code = data.get("code", -1)
                 if code != 0:
                     logger.info(
