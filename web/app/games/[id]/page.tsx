@@ -333,6 +333,7 @@ export default async function GameDetailPage({
               source_count?: number;
               model_used?: string;
               generated_at?: string;
+              data_blind_spots?: string[];
             }
           | undefined;
         if (!intel || !intel.gameplay_intro) return null;
@@ -341,11 +342,24 @@ export default async function GameDetailPage({
         const primary = intel.art_style_primary || null;
         const secondary = intel.art_style_secondary || [];
         const evidence = intel.art_style_evidence || [];
+        const blindSpots = intel.data_blind_spots || [];
+        const isStub = intel.model_used === "stub-no-llm";
         return (
-          <section className="mb-6 bg-gradient-to-br from-purple-50 to-pink-50 rounded-lg border border-purple-100 p-5 space-y-4">
+          <section
+            className={`mb-6 rounded-lg border p-5 space-y-4 ${
+              isStub
+                ? "bg-gray-50 border-gray-200"
+                : "bg-gradient-to-br from-purple-50 to-pink-50 border-purple-100"
+            }`}
+          >
             <div className="flex items-center justify-between flex-wrap gap-2">
-              <h3 className="font-semibold text-purple-900 flex items-center gap-2">
-                <span>🎮</span>玩法速览
+              <h3
+                className={`font-semibold flex items-center gap-2 ${
+                  isStub ? "text-gray-600" : "text-purple-900"
+                }`}
+              >
+                <span>{isStub ? "⏳" : "🎮"}</span>
+                {isStub ? "玩法速览 · 等待数据" : "玩法速览"}
                 <span className="text-xs font-normal text-gray-500">
                   · 置信度 {conf}%
                 </span>
@@ -413,6 +427,23 @@ export default async function GameDetailPage({
                     ))}
                   </ul>
                 )}
+              </div>
+            )}
+            {blindSpots.length > 0 && (
+              <div className="pt-3 border-t border-gray-200">
+                <p className="text-[11px] font-semibold text-gray-500 uppercase tracking-wide mb-1.5">
+                  数据盲区
+                </p>
+                <ul className="space-y-0.5">
+                  {blindSpots.map((b, i) => (
+                    <li
+                      key={i}
+                      className="text-[11px] text-gray-500 pl-3 border-l border-gray-300"
+                    >
+                      ⊘ {b}
+                    </li>
+                  ))}
+                </ul>
               </div>
             )}
           </section>

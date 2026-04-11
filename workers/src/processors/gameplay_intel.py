@@ -242,6 +242,56 @@ def _estimate_evidence_sources(sources: dict[str, Any]) -> int:
     return n
 
 
+def _source_breakdown(sources: dict[str, Any]) -> str:
+    """Compact per-field diagnostic string for logs."""
+    desc = sources.get("editor_intro") or ""
+    shots = sources.get("screenshots") or []
+    topics = sources.get("review_topics") or []
+    hooks = sources.get("hooks") or []
+    return (
+        f"desc_len={len(desc)} shots={len(shots)} "
+        f"topics={len(topics)} hooks={len(hooks)}"
+    )
+
+
+def _build_stub_intel(sources: dict[str, Any]) -> dict[str, Any]:
+    """Synthesize a low-confidence 'no data' record without calling the LLM.
+
+    Used when a game has zero input evidence — we still want the row to
+    exist so the dashboard can show a "waiting for fetch_details" state
+    instead of silently dropping the game.
+    """
+    missing: list[str] = []
+    if not sources.get("editor_intro"):
+        missing.append("应用宝 editor_intro 未抓到或为空")
+    if not sources.get("screenshots"):
+        missing.append("截图列表为空（fetch_details 未写入 metadata.screenshots）")
+    if not sources.get("review_topics"):
+        missing.append("玩家评论话题聚类未生成（topic_clustering 尚未产出）")
+    if not sources.get("hooks"):
+        missing.append("社媒 hook 短句未抽取（hook_extraction 尚未产出）")
+
+    return {
+        "gameplay_intro": (
+            "暂无足够公开资料可供分析——应用宝 editor_intro、截图、"
+            "玩家评论话题和社媒 hook 均未进入数据管道。"
+            "请先运行 run_fetch_details 回填 metadata.description / "
+            "metadata.screenshots，本记录会在下一次调度时自动刷新。"
+        ),
+        "features": [],
+        "art_style_primary": None,
+        "art_style_secondary": [],
+        "art_style_evidence": [],
+        "screenshot_refs": [],
+        "confidence": 0.1,
+        "source_count": 0,
+        "prompt_version": PROMPT_VERSION,
+        "model_used": "stub-no-llm",
+        "generated_at": _now_iso(),
+        "data_blind_spots": missing,
+    }
+
+
 # ============================================================
 # Generator
 # ============================================================
@@ -262,13 +312,36 @@ class GameplayIntelGenerator:
             logger.debug(f"[gameplay_intel] game {game_id} not found")
             return None
 
+        breakdown = _source_breakdown(sources)
         evidence_count = _estimate_evidence_sources(sources)
+
+        # Zero-evidence path: write a stub record without calling the LLM.
+        # Don't silently skip — the dashboard should show "waiting for data"
+        # instead of rendering a confusing empty state.
         if evidence_count == 0:
             logger.info(
                 f"[gameplay_intel] game {game_id} ({sources['name']}) "
-                f"has zero evidence — skipping"
+                f"zero evidence ({breakdown}) — writing stub record"
             )
-            return None
+            stub_blob = _build_stub_intel(sources)
+            conn.execute(
+                """
+                UPDATE games
+                   SET metadata = metadata || jsonb_build_object(
+                       'gameplay_intel', %s::jsonb
+                   ),
+                       updated_at = NOW()
+                 WHERE id = %s
+                """,
+                (json.dumps(stub_blob, ensure_ascii=False), game_id),
+            )
+            conn.commit()
+            return stub_blob
+
+        logger.info(
+            f"[gameplay_intel] game {game_id} ({sources['name']}) "
+            f"gathering ({breakdown}) — calling LLM"
+        )
 
         messages = build_gameplay_intel_messages(
             game_id=sources["game_id"],
@@ -312,6 +385,9 @@ class GameplayIntelGenerator:
             "prompt_version": PROMPT_VERSION,
             "model_used": model,
             "generated_at": _now_iso(),
+            # Align shape with stub path so the frontend never has to
+            # branch on "missing field" vs "empty list".
+            "data_blind_spots": [],
         }
 
         conn.execute(
