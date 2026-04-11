@@ -1,308 +1,293 @@
 import Link from "next/link";
 import { prisma } from "@/lib/prisma";
-import { PLATFORM_LABELS, formatNumber } from "@/lib/utils";
 import { getCurrentWorkspaceId } from "@/lib/workspace";
+import { formatNumber } from "@/lib/utils";
 
 export const dynamic = "force-dynamic";
 
-// Platforms (mirrors shared/platforms.json keys)
-const PLATFORM_KEYS: string[] = [
-  "google_play",
-  "app_store",
-  "taptap",
-  "steam",
-  "wechat_mini",
-  "poki",
-  "crazygames",
-  "4399",
-];
-
-// Genres (mirrors shared/genres.json)
-const GENRE_ENTRIES: Array<[string, { label_zh: string }]> = [
-  ["idle", { label_zh: "放置" }],
-  ["merge", { label_zh: "合成" }],
-  ["match3", { label_zh: "三消" }],
-  ["puzzle", { label_zh: "益智" }],
-  ["casual_action", { label_zh: "休闲动作" }],
-  ["runner", { label_zh: "跑酷" }],
-  ["tower_defense", { label_zh: "塔防" }],
-  ["simulation", { label_zh: "模拟" }],
-  ["word", { label_zh: "文字" }],
-  ["trivia", { label_zh: "问答" }],
-  ["arcade", { label_zh: "街机" }],
-  ["board", { label_zh: "棋牌" }],
-  ["card", { label_zh: "卡牌" }],
-  ["sports", { label_zh: "体育" }],
-  ["racing", { label_zh: "竞速" }],
-  ["strategy", { label_zh: "策略" }],
-  ["rpg", { label_zh: "角色扮演" }],
-  ["adventure", { label_zh: "冒险" }],
-  ["shooter", { label_zh: "射击" }],
-  ["moba", { label_zh: "MOBA" }],
-];
-
-type Filters = {
-  platform: string; // "all" or platform key
-  window: "24h" | "7d" | "30d";
-  genre: string; // "all" or genre key
+// ============================================================
+// Types + constants
+// ============================================================
+type RankRow = {
+  rank_position: number;
+  rank_change: number | null;
+  game_id: number;
+  name: string;
+  name_zh: string | null;
+  developer: string | null;
+  icon: string | null;
 };
 
-function parseFilters(params: {
-  platform?: string;
-  window?: string;
-  genre?: string;
-}): Filters {
-  const platform =
-    params.platform && PLATFORM_KEYS.includes(params.platform)
-      ? params.platform
-      : "all";
-  const window =
-    params.window === "7d" || params.window === "30d" ? params.window : "24h";
-  const genre = params.genre && params.genre.length > 0 ? params.genre : "all";
-  return { platform, window, genre };
-}
+const MAIN_CHARTS: Array<{ key: string; title: string; subtitle: string }> = [
+  { key: "hot", title: "热门榜", subtitle: "整体最热的 20 款" },
+  { key: "top_grossing", title: "畅销榜", subtitle: "广告 / 付费收入领先" },
+  { key: "new", title: "新游榜", subtitle: "新入榜，机会窗口" },
+  { key: "featured", title: "精选榜", subtitle: "腾讯官方编辑选" },
+];
 
-function windowToDays(w: Filters["window"]): number {
-  if (w === "7d") return 7;
-  if (w === "30d") return 30;
-  return 1;
-}
+const TAG_CHARTS: Array<{ key: string; title: string }> = [
+  { key: "tag_puzzle", title: "休闲益智" },
+  { key: "tag_rpg", title: "角色扮演" },
+  { key: "tag_board", title: "棋牌" },
+  { key: "tag_strategy", title: "策略" },
+  { key: "tag_adventure", title: "动作冒险" },
+  { key: "tag_singleplayer", title: "单机" },
+];
+
+const GRADE_COLORS: Record<string, string> = {
+  S: "bg-green-500 text-white",
+  A: "bg-lime-500 text-white",
+  B: "bg-yellow-500 text-white",
+  C: "bg-orange-500 text-white",
+  D: "bg-red-500 text-white",
+};
 
 function todayDate(): Date {
   return new Date(new Date().toISOString().split("T")[0]);
 }
 
-function daysAgo(n: number): Date {
-  const d = todayDate();
-  d.setDate(d.getDate() - n);
-  return d;
-}
+// ============================================================
+// Queries
+// ============================================================
 
-/** Return the start-of-window date given the current filter (exclusive of today is OK). */
-function windowStartDate(w: Filters["window"]): Date {
-  return daysAgo(windowToDays(w));
-}
-
-async function getStats(workspaceId: string) {
+async function getStatCards() {
   try {
-    const [gameCount, platformCount, alertCount, topScores] =
+    const today = todayDate();
+    const [wechatGameCount, todayChartsCount, newEntriesToday, highPotential] =
       await Promise.all([
-        prisma.game.count(),
-        prisma.platformListing.count(),
-        prisma.alertEvent.count({
+        // Total unique WeChat games tracked
+        prisma.game.count({
           where: {
-            triggeredAt: { gte: new Date(Date.now() - 24 * 60 * 60 * 1000) },
-            alert: { workspaceId },
+            platformListings: { some: { platform: "wechat_mini" } },
           },
         }),
-        prisma.potentialScore.findMany({
-          where: { scoredAt: todayDate() },
-          orderBy: { overallScore: "desc" },
-          take: 10,
-          include: { game: true },
+        // Total rank rows today (indication of scrape health)
+        prisma.rankingSnapshot.count({
+          where: {
+            snapshotDate: today,
+            platformListing: { platform: "wechat_mini" },
+          },
+        }),
+        // Today's entries on 新游榜
+        prisma.rankingSnapshot.count({
+          where: {
+            snapshotDate: today,
+            chartType: "new",
+            platformListing: { platform: "wechat_mini" },
+          },
+        }),
+        // High-potential WeChat games (overall_score >= 60 today)
+        prisma.potentialScore.count({
+          where: {
+            scoredAt: today,
+            overallScore: { gte: 60 },
+            game: {
+              platformListings: { some: { platform: "wechat_mini" } },
+            },
+          },
         }),
       ]);
-    return { gameCount, platformCount, alertCount, topScores };
+    return {
+      wechatGameCount,
+      todayChartsCount,
+      newEntriesToday,
+      highPotential,
+    };
   } catch {
-    return { gameCount: 0, platformCount: 0, alertCount: 0, topScores: [] };
+    return {
+      wechatGameCount: 0,
+      todayChartsCount: 0,
+      newEntriesToday: 0,
+      highPotential: 0,
+    };
   }
 }
 
-// 1. 榜单异动 Top 10 — largest rank improvement within the selected window
-async function getRankingMovement(filters: Filters) {
+async function getChartTop10(chartKey: string): Promise<RankRow[]> {
   try {
-    const windowStart = windowStartDate(filters.window);
+    const today = todayDate();
     const rows = await prisma.rankingSnapshot.findMany({
       where: {
-        snapshotDate: { gte: windowStart },
-        rankChange: { gt: 0 },
-        ...(filters.platform !== "all"
-          ? { platformListing: { platform: filters.platform } }
-          : {}),
+        chartType: chartKey,
+        snapshotDate: today,
+        platformListing: { platform: "wechat_mini" },
       },
-      orderBy: { rankChange: "desc" },
-      take: 50, // take more so genre filter has room
+      orderBy: { rankPosition: "asc" },
+      take: 10,
       include: {
         platformListing: {
           include: { game: true },
         },
       },
     });
-    // Deduplicate per game (keep the biggest rankChange in window)
-    const bestByGame = new Map<number, (typeof rows)[number]>();
-    for (const r of rows) {
-      const prev = bestByGame.get(r.platformListing.gameId);
-      if (!prev || (r.rankChange ?? 0) > (prev.rankChange ?? 0)) {
-        bestByGame.set(r.platformListing.gameId, r);
-      }
-    }
-    let deduped = Array.from(bestByGame.values());
-
-    if (filters.genre !== "all") {
-      deduped = deduped.filter(
-        (r) => r.platformListing.game.genre === filters.genre,
-      );
-    }
-    deduped.sort((a, b) => (b.rankChange ?? 0) - (a.rankChange ?? 0));
-    return deduped.slice(0, 10);
+    return rows.map((r) => ({
+      rank_position: r.rankPosition,
+      rank_change: r.rankChange,
+      game_id: r.platformListing.gameId,
+      name: r.platformListing.name,
+      name_zh: r.platformListing.game.nameZh,
+      developer: r.platformListing.game.developer,
+      icon: r.platformListing.game.thumbnailUrl,
+    }));
   } catch {
     return [];
   }
 }
 
-// 2. 口碑恶化榜 Top 10 — largest ratingQuality drop within the selected window
-async function getReputationDecline(filters: Filters) {
+async function getCategoryTop3(
+  tagKey: string,
+): Promise<{ title: string; games: RankRow[] }> {
+  const meta = TAG_CHARTS.find((c) => c.key === tagKey) || {
+    key: tagKey,
+    title: tagKey,
+  };
   try {
     const today = todayDate();
-    const past = windowStartDate(filters.window);
-
-    // Build platform filter (applied via game's platform_listings join)
-    const platformGameFilter =
-      filters.platform !== "all"
-        ? {
-            game: {
-              platformListings: { some: { platform: filters.platform } },
-              ...(filters.genre !== "all" ? { genre: filters.genre } : {}),
-            },
-          }
-        : filters.genre !== "all"
-          ? { game: { genre: filters.genre } }
-          : {};
-
-    const [todays, pasts] = await Promise.all([
-      prisma.potentialScore.findMany({
-        where: { scoredAt: today, ...platformGameFilter },
-        select: { gameId: true, ratingQuality: true, game: true },
-      }),
-      prisma.potentialScore.findMany({
-        where: { scoredAt: past },
-        select: { gameId: true, ratingQuality: true },
-      }),
-    ]);
-
-    if (todays.length === 0 || pasts.length === 0) return [];
-
-    const pastMap = new Map(pasts.map((p) => [p.gameId, p.ratingQuality]));
-    type Delta = {
-      gameId: number;
-      game: (typeof todays)[number]["game"];
-      drop: number;
-      current: number;
+    const rows = await prisma.rankingSnapshot.findMany({
+      where: {
+        chartType: tagKey,
+        snapshotDate: today,
+        platformListing: { platform: "wechat_mini" },
+      },
+      orderBy: { rankPosition: "asc" },
+      take: 3,
+      include: {
+        platformListing: { include: { game: true } },
+      },
+    });
+    return {
+      title: meta.title,
+      games: rows.map((r) => ({
+        rank_position: r.rankPosition,
+        rank_change: r.rankChange,
+        game_id: r.platformListing.gameId,
+        name: r.platformListing.name,
+        name_zh: r.platformListing.game.nameZh,
+        developer: r.platformListing.game.developer,
+        icon: r.platformListing.game.thumbnailUrl,
+      })),
     };
-    const deltas: Delta[] = [];
-    for (const t of todays) {
-      const prior = pastMap.get(t.gameId);
-      if (prior == null) continue;
-      const drop = prior - t.ratingQuality;
-      if (drop <= 0) continue;
-      deltas.push({
-        gameId: t.gameId,
-        game: t.game,
-        drop,
-        current: t.ratingQuality,
-      });
-    }
+  } catch {
+    return { title: meta.title, games: [] };
+  }
+}
 
-    deltas.sort((a, b) => b.drop - a.drop);
-    return deltas.slice(0, 10);
+async function getIAACandidates() {
+  try {
+    const today = todayDate();
+    const rows = await prisma.potentialScore.findMany({
+      where: {
+        scoredAt: today,
+        game: {
+          platformListings: { some: { platform: "wechat_mini" } },
+        },
+      },
+      orderBy: [{ overallScore: "desc" }],
+      take: 15,
+      include: { game: true },
+    });
+    return rows.map((r) => ({
+      game_id: r.gameId,
+      name_zh: r.game.nameZh,
+      name_en: r.game.nameEn,
+      developer: r.game.developer,
+      iaa_grade: r.game.iaaGrade,
+      iaa_suitability: r.game.iaaSuitability,
+      overall_score: r.overallScore,
+      genre: r.game.genre,
+    }));
   } catch {
     return [];
   }
 }
 
-// 3. 社交爆发榜 Top 10 — highest view_count within the selected window
-async function getSocialBurst(filters: Filters) {
+async function getLatestReviews() {
   try {
-    const since = windowStartDate(filters.window);
-    // Platform filter applies to game's listings (not to social platform)
-    const gameWhere =
-      filters.platform !== "all"
-        ? { platformListings: { some: { platform: filters.platform } } }
-        : {};
+    const rows = await prisma.review.findMany({
+      where: {
+        platformListing: { platform: "wechat_mini" },
+      },
+      orderBy: [{ helpfulCount: "desc" }, { scrapedAt: "desc" }],
+      take: 20,
+      include: {
+        platformListing: { include: { game: true } },
+      },
+    });
+    return rows.map((r) => ({
+      id: r.id,
+      game_id: r.platformListing.gameId,
+      game_name: r.platformListing.game.nameZh || r.platformListing.game.nameEn,
+      content: r.content,
+      author: r.authorName,
+      helpful: r.helpfulCount,
+      posted_at: r.postedAt,
+      sentiment: r.sentiment,
+      topics: r.topics,
+    }));
+  } catch {
+    return [];
+  }
+}
+
+async function getSocialBuzz() {
+  try {
+    const since = new Date();
+    since.setDate(since.getDate() - 7);
     const rows = await prisma.socialSignal.findMany({
       where: {
         signalDate: { gte: since },
-        ...(filters.platform !== "all" ? { game: gameWhere } : {}),
+        game: {
+          platformListings: { some: { platform: "wechat_mini" } },
+        },
       },
       include: { game: true },
     });
-    if (rows.length === 0) return [];
-
+    // Aggregate per game
     const ZERO = BigInt(0);
-    type Agg = {
-      gameId: number;
-      game: (typeof rows)[number]["game"];
-      totalViews: bigint;
-      platforms: Map<string, bigint>;
-    };
-    const byGame = new Map<number, Agg>();
-    for (const r of rows) {
-      if (filters.genre !== "all" && r.game.genre !== filters.genre) continue;
-      let a = byGame.get(r.gameId);
-      if (!a) {
-        a = {
-          gameId: r.gameId,
-          game: r.game,
-          totalViews: ZERO,
-          platforms: new Map(),
-        };
-        byGame.set(r.gameId, a);
+    const byGame = new Map<
+      number,
+      {
+        game_id: number;
+        name_zh: string | null;
+        name_en: string | null;
+        total_views: bigint;
+        total_videos: number;
       }
-      a.totalViews += r.viewCount;
-      a.platforms.set(
-        r.platform,
-        (a.platforms.get(r.platform) ?? ZERO) + r.viewCount,
-      );
+    >();
+    for (const r of rows) {
+      let agg = byGame.get(r.gameId);
+      if (!agg) {
+        agg = {
+          game_id: r.gameId,
+          name_zh: r.game.nameZh,
+          name_en: r.game.nameEn,
+          total_views: ZERO,
+          total_videos: 0,
+        };
+        byGame.set(r.gameId, agg);
+      }
+      agg.total_views += r.viewCount;
+      agg.total_videos += r.videoCount;
     }
     const arr = Array.from(byGame.values());
-    arr.sort((a, b) => (b.totalViews > a.totalViews ? 1 : -1));
-    return arr.slice(0, 10).map((a) => {
-      let topPlatform = "";
-      let maxViews = ZERO;
-      for (const [p, v] of a.platforms) {
-        if (v > maxViews) {
-          maxViews = v;
-          topPlatform = p;
-        }
-      }
-      return {
-        gameId: a.gameId,
-        game: a.game,
-        totalViews: Number(a.totalViews),
-        topPlatform,
-      };
-    });
+    arr.sort((a, b) => (b.total_views > a.total_views ? 1 : -1));
+    return arr.slice(0, 10).map((x) => ({
+      ...x,
+      total_views: Number(x.total_views),
+    }));
   } catch {
     return [];
   }
 }
 
-// 4. IAA 适配榜 Top 10 — high IAA + high overall score within the selected window
-async function getIAACandidates(filters: Filters) {
+async function getGenreWeeklyReports() {
   try {
-    const since = windowStartDate(filters.window);
-    const rows = await prisma.potentialScore.findMany({
-      where: {
-        scoredAt: { gte: since },
-        overallScore: { gte: 60 },
-        game: {
-          iaaSuitability: { gte: 70 },
-          ...(filters.genre !== "all" ? { genre: filters.genre } : {}),
-          ...(filters.platform !== "all"
-            ? { platformListings: { some: { platform: filters.platform } } }
-            : {}),
-        },
-      },
-      orderBy: [{ scoredAt: "desc" }, { overallScore: "desc" }],
-      take: 50,
-      include: { game: true },
+    const rows = await prisma.generatedReport.findMany({
+      where: { reportType: "genre_weekly" },
+      orderBy: { generatedAt: "desc" },
+      take: 3,
     });
-    // Dedup per game, keep most recent scored row
-    const bestByGame = new Map<number, (typeof rows)[number]>();
-    for (const r of rows) {
-      if (!bestByGame.has(r.gameId)) bestByGame.set(r.gameId, r);
-    }
-    return Array.from(bestByGame.values()).slice(0, 10);
+    return rows;
   } catch {
     return [];
   }
@@ -311,9 +296,14 @@ async function getIAACandidates(filters: Filters) {
 async function getRecentAlerts(workspaceId: string) {
   try {
     return await prisma.alertEvent.findMany({
-      where: { alert: { workspaceId } },
+      where: {
+        alert: { workspaceId },
+        game: {
+          platformListings: { some: { platform: "wechat_mini" } },
+        },
+      },
       orderBy: { triggeredAt: "desc" },
-      take: 5,
+      take: 8,
       include: { game: true, alert: true },
     });
   } catch {
@@ -321,353 +311,114 @@ async function getRecentAlerts(workspaceId: string) {
   }
 }
 
-async function getScraperStatus() {
-  try {
-    return await prisma.scrapeJob.findMany({
-      orderBy: { startedAt: "desc" },
-      take: 10,
-      distinct: ["platform"],
-    });
-  } catch {
-    return [];
-  }
+// ============================================================
+// UI sub-components
+// ============================================================
+
+function RankCell({ row }: { row: RankRow }) {
+  const name = row.name_zh || row.name;
+  return (
+    <Link
+      href={`/games/${row.game_id}`}
+      className="flex items-center gap-3 py-2 px-3 hover:bg-gray-50 rounded"
+    >
+      <span
+        className={`flex-shrink-0 w-6 text-center font-bold text-xs ${
+          row.rank_position <= 3
+            ? "text-orange-500"
+            : row.rank_position <= 10
+              ? "text-gray-700"
+              : "text-gray-400"
+        }`}
+      >
+        {row.rank_position}
+      </span>
+      {row.icon && (
+        <img
+          src={row.icon}
+          alt={name}
+          className="w-8 h-8 rounded flex-shrink-0 object-cover"
+        />
+      )}
+      <div className="flex-1 min-w-0">
+        <p className="text-sm font-medium truncate">{name}</p>
+        {row.developer && (
+          <p className="text-xs text-gray-400 truncate">{row.developer}</p>
+        )}
+      </div>
+      {row.rank_change != null && row.rank_change !== 0 && (
+        <span
+          className={`text-xs font-mono flex-shrink-0 ${
+            row.rank_change > 0 ? "text-green-600" : "text-red-500"
+          }`}
+        >
+          {row.rank_change > 0 ? "▲" : "▼"}
+          {Math.abs(row.rank_change)}
+        </span>
+      )}
+    </Link>
+  );
 }
 
-export default async function DashboardPage({
-  searchParams,
+function ChartCard({
+  title,
+  subtitle,
+  rows,
 }: {
-  searchParams: Promise<{
-    platform?: string;
-    window?: string;
-    genre?: string;
-  }>;
+  title: string;
+  subtitle: string;
+  rows: RankRow[];
 }) {
-  const params = await searchParams;
-  const filters = parseFilters(params);
-  const workspaceId = await getCurrentWorkspaceId();
-
-  const [
-    stats,
-    rankingMovement,
-    reputationDecline,
-    socialBurst,
-    iaaCandidates,
-    recentAlerts,
-    scraperStatus,
-  ] = await Promise.all([
-    getStats(workspaceId),
-    getRankingMovement(filters),
-    getReputationDecline(filters),
-    getSocialBurst(filters),
-    getIAACandidates(filters),
-    getRecentAlerts(workspaceId),
-    getScraperStatus(),
-  ]);
-
   return (
-    <div>
-      <h2 className="text-2xl font-bold mb-6">Dashboard</h2>
-
-      {/* Filter Bar */}
-      <form
-        method="get"
-        className="bg-white rounded-lg shadow p-4 mb-6 flex flex-wrap gap-3 items-end"
-      >
-        <div className="flex flex-col">
-          <label className="text-xs text-gray-500 mb-1">平台</label>
-          <select
-            name="platform"
-            defaultValue={filters.platform}
-            className="text-sm border border-gray-300 rounded px-2 py-1 bg-white"
-          >
-            <option value="all">全部</option>
-            {PLATFORM_KEYS.map((k) => (
-              <option key={k} value={k}>
-                {PLATFORM_LABELS[k] ?? k}
-              </option>
-            ))}
-          </select>
+    <div className="bg-white rounded-lg shadow p-4">
+      <div className="flex items-end justify-between mb-3">
+        <div>
+          <h3 className="font-semibold text-base">{title}</h3>
+          <p className="text-xs text-gray-400">{subtitle}</p>
         </div>
-        <div className="flex flex-col">
-          <label className="text-xs text-gray-500 mb-1">时间窗口</label>
-          <select
-            name="window"
-            defaultValue={filters.window}
-            className="text-sm border border-gray-300 rounded px-2 py-1 bg-white"
-          >
-            <option value="24h">24 小时</option>
-            <option value="7d">7 天</option>
-            <option value="30d">30 天</option>
-          </select>
-        </div>
-        <div className="flex flex-col">
-          <label className="text-xs text-gray-500 mb-1">品类</label>
-          <select
-            name="genre"
-            defaultValue={filters.genre}
-            className="text-sm border border-gray-300 rounded px-2 py-1 bg-white"
-          >
-            <option value="all">全部</option>
-            {GENRE_ENTRIES.map(([key, meta]) => (
-              <option key={key} value={key}>
-                {meta.label_zh}
-              </option>
-            ))}
-          </select>
-        </div>
-        <button
-          type="submit"
-          className="text-sm bg-blue-600 hover:bg-blue-700 text-white rounded px-4 py-1.5"
-        >
-          应用
-        </button>
-        {(filters.platform !== "all" ||
-          filters.window !== "24h" ||
-          filters.genre !== "all") && (
-          <Link
-            href="/"
-            className="text-sm text-gray-500 hover:text-gray-700 underline py-1.5"
-          >
-            重置
-          </Link>
-        )}
-        <span className="text-xs text-gray-400 ml-auto self-center">
-          窗口: {filters.window === "24h" ? "24 小时" : filters.window}
-          {" · "}
-          {windowToDays(filters.window)} 天
-        </span>
-      </form>
-
-      {/* Stat Cards */}
-      <div className="grid grid-cols-2 lg:grid-cols-4 gap-4 mb-6">
-        <StatCard label="总游戏数" value={stats.gameCount} />
-        <StatCard label="平台记录" value={stats.platformCount} />
-        <StatCard label="今日告警" value={stats.alertCount} />
-        <StatCard
-          label="高潜力 (75+)"
-          value={
-            stats.topScores.filter((s) => s.overallScore >= 75).length
-          }
-        />
+        <span className="text-xs text-gray-300">{rows.length} 项</span>
       </div>
-
-      {/* 4 Top-10 lists: 2x2 grid */}
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-6 mb-6">
-        {/* 1. 榜单异动 Top 10 */}
-        <div className="bg-white rounded-lg shadow p-4">
-          <h3 className="font-semibold text-lg mb-4">榜单异动 Top 10</h3>
-          {rankingMovement.length === 0 ? (
-            <p className="text-gray-400 text-sm">
-              暂无数据，等待首次爬取
-            </p>
-          ) : (
-            <div className="space-y-1">
-              {rankingMovement.map((r) => (
-                <Link
-                  key={r.id}
-                  href={`/games/${r.platformListing.gameId}`}
-                  className="flex items-center justify-between py-2 px-3 rounded hover:bg-gray-50"
-                >
-                  <div className="flex items-center gap-2 min-w-0">
-                    <span className="text-sm font-medium truncate">
-                      {r.platformListing.game.nameZh ||
-                        r.platformListing.game.nameEn ||
-                        r.platformListing.name}
-                    </span>
-                    <span className="text-xs text-gray-400 flex-shrink-0">
-                      {PLATFORM_LABELS[r.platformListing.platform] ??
-                        r.platformListing.platform}
-                    </span>
-                  </div>
-                  <div className="flex items-center gap-2 flex-shrink-0">
-                    <span className="text-xs text-green-600 font-mono font-bold">
-                      +{r.rankChange}
-                    </span>
-                    <span className="text-xs text-gray-500 font-mono">
-                      #{r.rankPosition}
-                    </span>
-                  </div>
-                </Link>
-              ))}
-            </div>
-          )}
+      {rows.length === 0 ? (
+        <p className="text-gray-400 text-sm py-4 text-center">暂无数据</p>
+      ) : (
+        <div className="space-y-0.5">
+          {rows.map((r) => (
+            <RankCell key={`${r.game_id}-${r.rank_position}`} row={r} />
+          ))}
         </div>
+      )}
+    </div>
+  );
+}
 
-        {/* 2. 口碑恶化榜 Top 10 */}
-        <div className="bg-white rounded-lg shadow p-4">
-          <h3 className="font-semibold text-lg mb-4">口碑恶化榜 Top 10</h3>
-          {reputationDecline.length === 0 ? (
-            <p className="text-gray-400 text-sm">
-              需要 7 天数据，等待历史积累
-            </p>
-          ) : (
-            <div className="space-y-1">
-              {reputationDecline.map((r) => (
-                <Link
-                  key={r.gameId}
-                  href={`/games/${r.gameId}`}
-                  className="flex items-center justify-between py-2 px-3 rounded hover:bg-gray-50"
-                >
-                  <span className="text-sm font-medium truncate">
-                    {r.game.nameZh || r.game.nameEn || "Unknown"}
-                  </span>
-                  <div className="flex items-center gap-2 flex-shrink-0">
-                    <span className="text-xs text-red-600 font-mono font-bold">
-                      -{r.drop}
-                    </span>
-                    <span className="text-xs text-gray-500 font-mono">
-                      {r.current}
-                    </span>
-                  </div>
-                </Link>
-              ))}
-            </div>
-          )}
+function CategoryCard({
+  title,
+  games,
+}: {
+  title: string;
+  games: RankRow[];
+}) {
+  return (
+    <div className="bg-white rounded-lg shadow p-3">
+      <h4 className="font-semibold text-sm mb-2">{title}</h4>
+      {games.length === 0 ? (
+        <p className="text-gray-400 text-xs py-2">暂无</p>
+      ) : (
+        <div className="space-y-1">
+          {games.map((g) => (
+            <Link
+              key={g.game_id}
+              href={`/games/${g.game_id}`}
+              className="flex items-center gap-2 py-1 px-1 text-xs hover:bg-gray-50 rounded"
+            >
+              <span className="w-4 text-orange-500 font-bold">
+                {g.rank_position}
+              </span>
+              <span className="truncate flex-1">{g.name_zh || g.name}</span>
+            </Link>
+          ))}
         </div>
-
-        {/* 3. 社交爆发榜 Top 10 */}
-        <div className="bg-white rounded-lg shadow p-4">
-          <h3 className="font-semibold text-lg mb-4">社交爆发榜 Top 10</h3>
-          {socialBurst.length === 0 ? (
-            <p className="text-gray-400 text-sm">
-              暂无数据，等待首次爬取
-            </p>
-          ) : (
-            <div className="space-y-1">
-              {socialBurst.map((s) => (
-                <Link
-                  key={s.gameId}
-                  href={`/games/${s.gameId}`}
-                  className="flex items-center justify-between py-2 px-3 rounded hover:bg-gray-50"
-                >
-                  <div className="flex items-center gap-2 min-w-0">
-                    <span className="text-sm font-medium truncate">
-                      {s.game.nameZh || s.game.nameEn || "Unknown"}
-                    </span>
-                    <span className="text-xs text-gray-400 flex-shrink-0">
-                      {s.topPlatform}
-                    </span>
-                  </div>
-                  <span className="text-xs text-purple-600 font-mono font-bold flex-shrink-0">
-                    {formatNumber(s.totalViews)}
-                  </span>
-                </Link>
-              ))}
-            </div>
-          )}
-        </div>
-
-        {/* 4. IAA 适配榜 Top 10 */}
-        <div className="bg-white rounded-lg shadow p-4">
-          <h3 className="font-semibold text-lg mb-4">IAA 适配榜 Top 10</h3>
-          {iaaCandidates.length === 0 ? (
-            <p className="text-gray-400 text-sm">
-              暂无数据，等待首次爬取
-            </p>
-          ) : (
-            <div className="space-y-1">
-              {iaaCandidates.map((s) => (
-                <Link
-                  key={s.id}
-                  href={`/games/${s.gameId}`}
-                  className="flex items-center justify-between py-2 px-3 rounded hover:bg-gray-50"
-                >
-                  <div className="flex items-center gap-2 min-w-0">
-                    <span className="text-sm font-medium truncate">
-                      {s.game.nameZh || s.game.nameEn || "Unknown"}
-                    </span>
-                    <span className="text-xs text-gray-400 flex-shrink-0">
-                      {s.game.genre ?? "-"}
-                    </span>
-                  </div>
-                  <div className="flex items-center gap-2 flex-shrink-0">
-                    <span
-                      className={`text-xs font-bold px-2 py-0.5 rounded ${
-                        s.overallScore >= 75
-                          ? "bg-green-100 text-green-800"
-                          : "bg-yellow-100 text-yellow-800"
-                      }`}
-                    >
-                      {s.overallScore}
-                    </span>
-                    <span className="text-xs text-blue-600 font-mono">
-                      IAA {s.game.iaaSuitability}
-                    </span>
-                  </div>
-                </Link>
-              ))}
-            </div>
-          )}
-        </div>
-      </div>
-
-      {/* Recent Alerts + Scraper Status */}
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-        <div className="bg-white rounded-lg shadow p-4">
-          <h3 className="font-semibold text-lg mb-4">最新告警</h3>
-          {recentAlerts.length === 0 ? (
-            <p className="text-gray-400 text-sm">暂无告警</p>
-          ) : (
-            <div className="space-y-2">
-              {recentAlerts.map((a) => (
-                <Link
-                  key={a.id}
-                  href={`/games/${a.gameId}`}
-                  className="flex items-center justify-between py-2 px-3 rounded hover:bg-gray-50"
-                >
-                  <div>
-                    <span className="text-sm font-medium">
-                      {a.game.nameZh || a.game.nameEn}
-                    </span>
-                    <span className="text-xs text-gray-400 ml-2">
-                      {a.alert.name}
-                    </span>
-                  </div>
-                  <span className="text-xs text-gray-500">
-                    {a.triggeredAt.toLocaleDateString("zh-CN")}
-                  </span>
-                </Link>
-              ))}
-            </div>
-          )}
-        </div>
-
-        <div className="bg-white rounded-lg shadow p-4">
-          <h3 className="font-semibold text-lg mb-4">爬虫状态</h3>
-          {scraperStatus.length === 0 ? (
-            <p className="text-gray-400 text-sm">暂无爬虫记录</p>
-          ) : (
-            <div className="space-y-2">
-              {scraperStatus.map((j) => (
-                <div
-                  key={j.id}
-                  className="flex items-center justify-between py-2 px-3"
-                >
-                  <span className="text-sm font-medium">
-                    {PLATFORM_LABELS[j.platform] ?? j.platform}
-                  </span>
-                  <div className="flex items-center gap-2">
-                    <span
-                      className={`text-xs px-2 py-0.5 rounded ${
-                        j.status === "success"
-                          ? "bg-green-100 text-green-700"
-                          : j.status === "failed"
-                            ? "bg-red-100 text-red-700"
-                            : "bg-yellow-100 text-yellow-700"
-                      }`}
-                    >
-                      {j.status}
-                    </span>
-                    <span className="text-xs text-gray-400">
-                      {j.itemsScraped} items
-                    </span>
-                  </div>
-                </div>
-              ))}
-            </div>
-          )}
-        </div>
-      </div>
+      )}
     </div>
   );
 }
@@ -675,8 +426,398 @@ export default async function DashboardPage({
 function StatCard({ label, value }: { label: string; value: number }) {
   return (
     <div className="bg-white rounded-lg shadow p-4">
-      <p className="text-sm text-gray-500">{label}</p>
+      <p className="text-xs text-gray-500">{label}</p>
       <p className="text-3xl font-bold mt-1">{value.toLocaleString()}</p>
+    </div>
+  );
+}
+
+// ============================================================
+// Page
+// ============================================================
+
+export default async function WechatDashboardPage() {
+  const workspaceId = await getCurrentWorkspaceId();
+  const [
+    stats,
+    hotChart,
+    grossingChart,
+    newChart,
+    featuredChart,
+    tagPuzzle,
+    tagRpg,
+    tagBoard,
+    tagStrategy,
+    tagAdventure,
+    tagSingleplayer,
+    iaaCandidates,
+    latestReviews,
+    socialBuzz,
+    weeklyReports,
+    recentAlerts,
+  ] = await Promise.all([
+    getStatCards(),
+    getChartTop10("hot"),
+    getChartTop10("top_grossing"),
+    getChartTop10("new"),
+    getChartTop10("featured"),
+    getCategoryTop3("tag_puzzle"),
+    getCategoryTop3("tag_rpg"),
+    getCategoryTop3("tag_board"),
+    getCategoryTop3("tag_strategy"),
+    getCategoryTop3("tag_adventure"),
+    getCategoryTop3("tag_singleplayer"),
+    getIAACandidates(),
+    getLatestReviews(),
+    getSocialBuzz(),
+    getGenreWeeklyReports(),
+    getRecentAlerts(workspaceId),
+  ]);
+
+  const categories = [
+    tagPuzzle,
+    tagRpg,
+    tagBoard,
+    tagStrategy,
+    tagAdventure,
+    tagSingleplayer,
+  ];
+
+  const chartData: Array<RankRow[]> = [
+    hotChart,
+    grossingChart,
+    newChart,
+    featuredChart,
+  ];
+
+  return (
+    <div className="space-y-8">
+      {/* Header */}
+      <header>
+        <h1 className="text-2xl font-bold">微信爆款中心</h1>
+        <p className="text-sm text-gray-500 mt-1">
+          围绕打造微信小游戏 IAA 爆款的核心信号 · 数据每日 06:40 - 06:49 HKT 更新
+        </p>
+      </header>
+
+      {/* Stat cards */}
+      <section className="grid grid-cols-2 lg:grid-cols-4 gap-4">
+        <StatCard
+          label="已追踪微信游戏"
+          value={stats.wechatGameCount}
+        />
+        <StatCard
+          label="今日榜单条目"
+          value={stats.todayChartsCount}
+        />
+        <StatCard label="新游榜条目" value={stats.newEntriesToday} />
+        <StatCard label="高潜力 (≥60)" value={stats.highPotential} />
+      </section>
+
+      {/* Section 1: 4 main ranking charts */}
+      <section>
+        <h2 className="text-lg font-semibold mb-3">榜单动态</h2>
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+          {MAIN_CHARTS.map((meta, i) => (
+            <ChartCard
+              key={meta.key}
+              title={meta.title}
+              subtitle={meta.subtitle}
+              rows={chartData[i]}
+            />
+          ))}
+        </div>
+      </section>
+
+      {/* Section 2: Category heat */}
+      <section>
+        <h2 className="text-lg font-semibold mb-3">品类热度</h2>
+        <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-3">
+          {categories.map((c) => (
+            <CategoryCard key={c.title} title={c.title} games={c.games} />
+          ))}
+        </div>
+      </section>
+
+      {/* Section 3: IAA candidates + Social buzz */}
+      <section className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+        {/* IAA Candidates */}
+        <div className="bg-white rounded-lg shadow p-4">
+          <div className="flex items-end justify-between mb-3">
+            <div>
+              <h2 className="font-semibold text-base">IAA 候选 Top 15</h2>
+              <p className="text-xs text-gray-400">
+                综合评分与 IAA 适配度排序
+              </p>
+            </div>
+            <Link
+              href="/iaa"
+              className="text-xs text-blue-500 hover:underline"
+            >
+              全部 →
+            </Link>
+          </div>
+          {iaaCandidates.length === 0 ? (
+            <p className="text-gray-400 text-sm py-4 text-center">
+              等待评分数据生成
+            </p>
+          ) : (
+            <div className="overflow-x-auto">
+              <table className="w-full text-sm">
+                <thead className="text-xs text-gray-500 border-b">
+                  <tr>
+                    <th className="text-left px-2 py-1.5">游戏</th>
+                    <th className="text-center px-2 py-1.5">IAA</th>
+                    <th className="text-center px-2 py-1.5">品类</th>
+                    <th className="text-right px-2 py-1.5">评分</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y">
+                  {iaaCandidates.map((g) => (
+                    <tr key={g.game_id} className="hover:bg-gray-50">
+                      <td className="px-2 py-2">
+                        <Link
+                          href={`/games/${g.game_id}`}
+                          className="text-blue-600 hover:underline text-sm font-medium"
+                        >
+                          {g.name_zh || g.name_en}
+                        </Link>
+                      </td>
+                      <td className="text-center px-2 py-2">
+                        {g.iaa_grade ? (
+                          <span
+                            className={`text-xs font-bold px-1.5 py-0.5 rounded ${
+                              GRADE_COLORS[g.iaa_grade] || "bg-gray-200"
+                            }`}
+                          >
+                            {g.iaa_grade}
+                          </span>
+                        ) : (
+                          <span className="text-gray-300 text-xs">-</span>
+                        )}
+                      </td>
+                      <td className="text-center px-2 py-2 text-xs text-gray-500">
+                        {g.genre || "-"}
+                      </td>
+                      <td className="text-right px-2 py-2">
+                        <span
+                          className={`text-xs font-bold ${
+                            g.overall_score >= 75
+                              ? "text-green-600"
+                              : "text-gray-600"
+                          }`}
+                        >
+                          {g.overall_score}
+                        </span>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </div>
+
+        {/* Social Buzz */}
+        <div className="bg-white rounded-lg shadow p-4">
+          <div className="flex items-end justify-between mb-3">
+            <div>
+              <h2 className="font-semibold text-base">社交热度 Top 10</h2>
+              <p className="text-xs text-gray-400">
+                近 7 天 B 站 / 抖音播放量聚合
+              </p>
+            </div>
+          </div>
+          {socialBuzz.length === 0 ? (
+            <p className="text-gray-400 text-sm py-4 text-center">
+              暂无社媒数据
+            </p>
+          ) : (
+            <div className="space-y-1">
+              {socialBuzz.map((s) => (
+                <Link
+                  key={s.game_id}
+                  href={`/games/${s.game_id}`}
+                  className="flex items-center justify-between py-1.5 px-2 rounded hover:bg-gray-50"
+                >
+                  <span className="text-sm truncate flex-1">
+                    {s.name_zh || s.name_en}
+                  </span>
+                  <div className="flex items-center gap-3 flex-shrink-0 text-xs">
+                    <span className="text-gray-400">
+                      {s.total_videos} 视频
+                    </span>
+                    <span className="text-purple-600 font-mono font-bold">
+                      {formatNumber(s.total_views)}
+                    </span>
+                  </div>
+                </Link>
+              ))}
+            </div>
+          )}
+        </div>
+      </section>
+
+      {/* Section 4: Player voices (Bilibili reviews) */}
+      <section>
+        <div className="flex items-end justify-between mb-3">
+          <div>
+            <h2 className="text-lg font-semibold">玩家声音</h2>
+            <p className="text-xs text-gray-400">
+              B 站高赞评论 · 代理微信玩家意见（WeChat 评价系统闭环）
+            </p>
+          </div>
+        </div>
+        {latestReviews.length === 0 ? (
+          <div className="bg-white rounded-lg shadow p-8 text-center">
+            <p className="text-gray-400 text-sm">
+              暂无评论数据 — 待 Bilibili 抓取
+            </p>
+            <p className="text-gray-300 text-xs mt-2">
+              每日 09:00 HKT 自动抓取；或手动触发{" "}
+              <code className="bg-gray-100 px-1 rounded">
+                python -m src.worker scrape_reviews
+              </code>
+            </p>
+          </div>
+        ) : (
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+            {latestReviews.map((r) => (
+              <div
+                key={r.id}
+                className="bg-white rounded-lg shadow p-3 border-l-2 border-blue-300"
+              >
+                <div className="flex items-start justify-between mb-1.5">
+                  <Link
+                    href={`/games/${r.game_id}`}
+                    className="text-xs font-medium text-blue-600 hover:underline truncate mr-2"
+                  >
+                    {r.game_name}
+                  </Link>
+                  <span className="text-xs text-gray-400 flex-shrink-0">
+                    {r.helpful ?? 0} 👍
+                  </span>
+                </div>
+                <p className="text-sm text-gray-700 leading-relaxed">
+                  {r.content.slice(0, 140)}
+                  {r.content.length > 140 ? "…" : ""}
+                </p>
+                <div className="flex items-center justify-between mt-2 text-xs text-gray-400">
+                  <span>{r.author || "匿名"}</span>
+                  {r.sentiment && (
+                    <span
+                      className={`px-1.5 py-0.5 rounded ${
+                        r.sentiment === "positive"
+                          ? "bg-green-100 text-green-700"
+                          : r.sentiment === "negative"
+                            ? "bg-red-100 text-red-700"
+                            : "bg-gray-100 text-gray-500"
+                      }`}
+                    >
+                      {r.sentiment === "positive"
+                        ? "正面"
+                        : r.sentiment === "negative"
+                          ? "负面"
+                          : "中性"}
+                    </span>
+                  )}
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+      </section>
+
+      {/* Section 5: Weekly reports + alerts */}
+      <section className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+        {/* Genre weekly reports */}
+        <div className="bg-white rounded-lg shadow p-4">
+          <div className="flex items-end justify-between mb-3">
+            <h2 className="font-semibold text-base">赛道周报</h2>
+            <Link
+              href="/reports"
+              className="text-xs text-blue-500 hover:underline"
+            >
+              全部 →
+            </Link>
+          </div>
+          {weeklyReports.length === 0 ? (
+            <p className="text-gray-400 text-sm py-4 text-center">
+              暂无周报（每周一 09:00 HKT 自动生成）
+            </p>
+          ) : (
+            <div className="space-y-3">
+              {weeklyReports.map((r) => (
+                <Link
+                  key={r.id}
+                  href={`/reports/${r.id}`}
+                  className="block p-3 rounded border border-gray-100 hover:bg-gray-50"
+                >
+                  <div className="flex items-center justify-between">
+                    <p className="text-sm font-medium">{r.title}</p>
+                    <span className="text-xs text-gray-400">
+                      {r.generatedAt.toLocaleDateString("zh-CN")}
+                    </span>
+                  </div>
+                  {r.summary && (
+                    <p className="text-xs text-gray-500 mt-1 line-clamp-2">
+                      {r.summary}
+                    </p>
+                  )}
+                </Link>
+              ))}
+            </div>
+          )}
+        </div>
+
+        {/* Recent alerts */}
+        <div className="bg-white rounded-lg shadow p-4">
+          <div className="flex items-end justify-between mb-3">
+            <h2 className="font-semibold text-base">微信相关告警</h2>
+            <Link
+              href="/alerts"
+              className="text-xs text-blue-500 hover:underline"
+            >
+              全部 →
+            </Link>
+          </div>
+          {recentAlerts.length === 0 ? (
+            <p className="text-gray-400 text-sm py-4 text-center">
+              暂无告警事件
+            </p>
+          ) : (
+            <div className="space-y-2">
+              {recentAlerts.map((a) => (
+                <Link
+                  key={a.id}
+                  href={`/games/${a.gameId}`}
+                  className="flex items-center justify-between py-1.5 px-2 rounded hover:bg-gray-50"
+                >
+                  <div className="min-w-0 flex-1">
+                    <span className="text-sm font-medium">
+                      {a.game.nameZh || a.game.nameEn}
+                    </span>
+                    <p className="text-xs text-gray-400 truncate">
+                      {a.alert.name}
+                    </p>
+                  </div>
+                  <span className="text-xs text-gray-500 flex-shrink-0">
+                    {a.triggeredAt.toLocaleDateString("zh-CN")}
+                  </span>
+                </Link>
+              ))}
+            </div>
+          )}
+        </div>
+      </section>
+
+      {/* Footer hint */}
+      <footer className="text-center text-xs text-gray-400 py-4">
+        想看全球多平台视图？前往{" "}
+        <Link href="/global" className="text-blue-500 hover:underline">
+          /global 全局 Dashboard
+        </Link>
+      </footer>
     </div>
   );
 }
