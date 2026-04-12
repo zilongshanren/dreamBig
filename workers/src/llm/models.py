@@ -44,12 +44,12 @@ TASK_MODEL_MAP: dict[str, PoeModel] = {
     "sentiment_classification": PoeModel.HAIKU,
     "topic_extraction": PoeModel.HAIKU,
     "topic_clustering": PoeModel.SONNET,
-    "game_report_generation": PoeModel.OPUS,
-    "iaa_advice": PoeModel.OPUS,
+    "game_report_generation": PoeModel.SONNET,
+    "iaa_advice": PoeModel.SONNET,
     "genre_trend_summary": PoeModel.SONNET,
     "review_summary": PoeModel.SONNET,
     "game_name_translate": PoeModel.HAIKU,
-    "wechat_intelligence": PoeModel.OPUS,
+    "wechat_intelligence": PoeModel.SONNET,
     "gameplay_intel": PoeModel.SONNET,
 }
 

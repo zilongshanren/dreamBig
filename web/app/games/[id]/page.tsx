@@ -29,6 +29,45 @@ type GameReportPayload = {
   overall_confidence?: number;
 };
 
+type GameplayIntelMetadata = {
+  gameplay_intro?: string;
+  features?: string[];
+  art_style_primary?: string | null;
+  art_style_secondary?: string[];
+  art_style_evidence?: string[];
+  screenshot_refs?: number[];
+  confidence?: number;
+  source_count?: number;
+  model_used?: string;
+  generated_at?: string;
+  data_blind_spots?: string[];
+};
+
+type GameMetadata = {
+  description?: string;
+  description_source?: string;
+  screenshots?: string[];
+  gameplay_intel?: GameplayIntelMetadata;
+};
+
+type ReviewTopicSummaryView = {
+  id: number;
+  topic: string;
+  sentiment: string;
+  snippet: string;
+  reviewCount: number;
+  computedAt: Date;
+};
+
+type GamePageRelations = {
+  gameReport?: {
+    payload: unknown;
+    confidence: unknown;
+    generatedAt: Date;
+  } | null;
+  reviewTopicSummaries?: ReviewTopicSummaryView[];
+};
+
 function parseEvidenceRef(ref: string): { type: string; id?: string } {
   const [type, id] = ref.split(":");
   return { type: type || "unknown", id };
@@ -150,15 +189,8 @@ export default async function GameDetailPage({
     : [];
 
   // Parse GameReport payload
-  const gameAny = game as any;
-  const gameReport = gameAny.gameReport as
-    | {
-        payload: unknown;
-        confidence: unknown;
-        generatedAt: Date;
-      }
-    | null
-    | undefined;
+  const gameWithRelations = game as typeof game & GamePageRelations;
+  const gameReport = gameWithRelations.gameReport;
   const reportPayload = gameReport?.payload
     ? (gameReport.payload as unknown as GameReportPayload)
     : null;
@@ -171,16 +203,7 @@ export default async function GameDetailPage({
     reportPayload?.positioning || game.positioning || null;
 
   // Review topic summaries (keep most recent computed_at per topic, top 10 per sentiment)
-  const topicSummaries = (gameAny.reviewTopicSummaries as
-    | Array<{
-        id: number;
-        topic: string;
-        sentiment: string;
-        snippet: string;
-        reviewCount: number;
-        computedAt: Date;
-      }>
-    | undefined) ?? [];
+  const topicSummaries = gameWithRelations.reviewTopicSummaries ?? [];
 
   // Dedupe: keep most recent computedAt per (topic, sentiment)
   const topicMap = new Map<
@@ -320,34 +343,29 @@ export default async function GameDetailPage({
 
       {/* Gameplay intel fact sheet (metadata.gameplay_intel, LLM-synthesized) */}
       {(() => {
-        const meta = game.metadata as any;
-        const intel = meta?.gameplay_intel as
-          | {
-              gameplay_intro?: string;
-              features?: string[];
-              art_style_primary?: string | null;
-              art_style_secondary?: string[];
-              art_style_evidence?: string[];
-              screenshot_refs?: number[];
-              confidence?: number;
-              source_count?: number;
-              model_used?: string;
-              generated_at?: string;
-              data_blind_spots?: string[];
-            }
-          | undefined;
-        if (!intel || !intel.gameplay_intro) return null;
-        const conf = Math.round((intel.confidence ?? 0) * 100);
-        const features = intel.features || [];
-        const primary = intel.art_style_primary || null;
-        const secondary = intel.art_style_secondary || [];
-        const evidence = intel.art_style_evidence || [];
-        const blindSpots = intel.data_blind_spots || [];
-        const isStub = intel.model_used === "stub-no-llm";
+        const meta = game.metadata as GameMetadata | null | undefined;
+        const intel = meta?.gameplay_intel;
+        const isStub = intel?.model_used === "stub-no-llm";
+        const fallbackIntro =
+          typeof meta?.description === "string" ? meta.description.trim() : "";
+        const useDescriptionFallback =
+          !!fallbackIntro && (!intel?.gameplay_intro || isStub);
+        const introText = useDescriptionFallback
+          ? fallbackIntro
+          : intel?.gameplay_intro || "";
+        if (!introText) return null;
+        const conf = Math.round((intel?.confidence ?? 0) * 100);
+        const features = intel?.features || [];
+        const primary = intel?.art_style_primary || null;
+        const secondary = intel?.art_style_secondary || [];
+        const evidence = intel?.art_style_evidence || [];
+        const blindSpots = intel?.data_blind_spots || [];
+        const introSource =
+          meta?.description_source === "baidu_baike" ? "百度百科" : "平台详情";
         return (
           <section
             className={`mb-6 rounded-lg border p-5 space-y-4 ${
-              isStub
+              useDescriptionFallback || isStub
                 ? "bg-gray-50 border-gray-200"
                 : "bg-gradient-to-br from-purple-50 to-pink-50 border-purple-100"
             }`}
@@ -355,30 +373,45 @@ export default async function GameDetailPage({
             <div className="flex items-center justify-between flex-wrap gap-2">
               <h3
                 className={`font-semibold flex items-center gap-2 ${
-                  isStub ? "text-gray-600" : "text-purple-900"
+                  useDescriptionFallback || isStub
+                    ? "text-gray-600"
+                    : "text-purple-900"
                 }`}
               >
-                <span>{isStub ? "⏳" : "🎮"}</span>
-                {isStub ? "玩法速览 · 等待数据" : "玩法速览"}
-                <span className="text-xs font-normal text-gray-500">
-                  · 置信度 {conf}%
+                <span>
+                  {useDescriptionFallback ? "📝" : isStub ? "⏳" : "🎮"}
                 </span>
-                {intel.source_count !== undefined && (
+                {useDescriptionFallback
+                  ? "玩法速览 · 资料摘要"
+                  : isStub
+                    ? "玩法速览 · 等待数据"
+                    : "玩法速览"}
+                {!useDescriptionFallback && (
+                  <span className="text-xs font-normal text-gray-500">
+                    · 置信度 {conf}%
+                  </span>
+                )}
+                {!useDescriptionFallback && intel?.source_count !== undefined && (
                   <span className="text-xs font-normal text-gray-400">
                     · {intel.source_count} 个数据源
                   </span>
                 )}
+                {useDescriptionFallback && (
+                  <span className="text-xs font-normal text-gray-400">
+                    · 来源 {introSource}
+                  </span>
+                )}
               </h3>
-              {intel.model_used && (
+              {!useDescriptionFallback && intel?.model_used && (
                 <span className="text-[10px] text-gray-400 font-mono">
                   {intel.model_used}
                 </span>
               )}
             </div>
             <p className="text-sm text-gray-700 leading-relaxed">
-              {intel.gameplay_intro}
+              {introText}
             </p>
-            {features.length > 0 && (
+            {!useDescriptionFallback && features.length > 0 && (
               <div>
                 <p className="text-[11px] font-semibold text-purple-700 uppercase tracking-wide mb-1.5">
                   玩法特色
@@ -395,7 +428,7 @@ export default async function GameDetailPage({
                 </div>
               </div>
             )}
-            {(primary || secondary.length > 0) && (
+            {!useDescriptionFallback && (primary || secondary.length > 0) && (
               <div>
                 <p className="text-[11px] font-semibold text-purple-700 uppercase tracking-wide mb-1.5">
                   美术风格
@@ -429,7 +462,7 @@ export default async function GameDetailPage({
                 )}
               </div>
             )}
-            {blindSpots.length > 0 && (
+            {!useDescriptionFallback && blindSpots.length > 0 && (
               <div className="pt-3 border-t border-gray-200">
                 <p className="text-[11px] font-semibold text-gray-500 uppercase tracking-wide mb-1.5">
                   数据盲区
@@ -452,12 +485,10 @@ export default async function GameDetailPage({
 
       {/* Screenshots */}
       {(() => {
-        const meta = game.metadata as any;
-        const screenshots = meta?.screenshots as string[] | undefined;
+        const meta = game.metadata as GameMetadata | null | undefined;
+        const screenshots = meta?.screenshots;
         if (!screenshots?.length) return null;
-        const intel = meta?.gameplay_intel as
-          | { screenshot_refs?: number[] }
-          | undefined;
+        const intel = meta?.gameplay_intel;
         const recommended = new Set<number>(intel?.screenshot_refs || []);
         return (
           <div className="mb-6">

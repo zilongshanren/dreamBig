@@ -280,16 +280,23 @@ def run_fetch_details():
     """Fetch game details (screenshots, descriptions) for games missing them."""
     logger.info("Starting game details fetch")
     import json
+    import httpx
+
+    from src.scrapers.baidu_baike import fetch_baike_game_details
 
     with psycopg.connect(DB_URL) as conn:
-        # Find games without screenshots in metadata
+        # Find games missing screenshots and/or description in metadata.
         games = conn.execute(
             """
-            SELECT g.id, pl.platform, pl.platform_id
+            SELECT g.id,
+                   COALESCE(g.name_zh, g.name_en, '') AS game_name,
+                   pl.platform,
+                   pl.platform_id
             FROM games g
             JOIN platform_listings pl ON g.id = pl.game_id
             WHERE g.metadata::text = '{}'
-               OR g.metadata->>'screenshots' IS NULL
+               OR COALESCE(NULLIF(g.metadata->>'screenshots', '[]'), '') = ''
+               OR COALESCE(NULLIF(g.metadata->>'description', ''), '') = ''
             ORDER BY g.id
             """
         ).fetchall()
@@ -301,57 +308,94 @@ def run_fetch_details():
         logger.info(f"Fetching details for {len(games)} game-platform pairs")
 
         # Group by platform to reuse scraper instances
-        by_platform: dict[str, list[tuple[int, str]]] = {}
-        for game_id, platform, platform_id in games:
-            by_platform.setdefault(platform, []).append((game_id, platform_id))
+        by_platform: dict[str, list[tuple[int, str, str]]] = {}
+        for game_id, game_name, platform, platform_id in games:
+            by_platform.setdefault(platform, []).append((game_id, game_name, platform_id))
 
         total = 0
-        for platform, items in by_platform.items():
-            if platform not in SCRAPER_MAP:
-                continue
+        from src.utils.proxy import get_proxy_url
+        with httpx.Client(
+            trust_env=False,
+            timeout=15,
+            follow_redirects=True,
+            proxy=get_proxy_url(),
+            headers={
+                "User-Agent": (
+                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                    "AppleWebKit/537.36 (KHTML, like Gecko) "
+                    "Chrome/124.0.0.0 Safari/537.36"
+                ),
+                "Accept-Language": "zh-CN,zh;q=0.9",
+            },
+        ) as baike_client:
+            for platform, items in by_platform.items():
+                if platform not in SCRAPER_MAP:
+                    continue
 
-            scraper = _get_scraper(platform)
-            for game_id, platform_id in items:
+                scraper = _get_scraper(platform)
+                for game_id, game_name, platform_id in items:
+                    try:
+                        details = asyncio.run(scraper.scrape_game_details(platform_id))
+
+                        # Build metadata update from the native platform first.
+                        meta = {}
+                        if details and details.screenshots:
+                            meta["screenshots"] = details.screenshots[:5]
+                            meta["screenshots_source"] = platform
+                        if details and details.description:
+                            meta["description"] = details.description
+                            meta["description_source"] = platform
+                        if details and details.icon_url:
+                            meta["icon_url"] = details.icon_url
+
+                        # WeChat/YYB often has empty editor_intro + screenshots.
+                        # Baidu Baike is a useful Chinese fallback for both.
+                        needs_baike = (
+                            not meta.get("screenshots") or not meta.get("description")
+                        )
+                        baike = None
+                        if needs_baike and game_name:
+                            baike = fetch_baike_game_details(
+                                game_name,
+                                client=baike_client,
+                            )
+                            if baike:
+                                meta["baike_url"] = baike.url
+                                if not meta.get("description") and baike.description:
+                                    meta["description"] = baike.description
+                                    meta["description_source"] = "baidu_baike"
+                                if not meta.get("screenshots") and baike.screenshots:
+                                    meta["screenshots"] = baike.screenshots[:5]
+                                    meta["screenshots_source"] = "baidu_baike"
+
+                        icon_url = details.icon_url if details else None
+                        if meta:
+                            conn.execute(
+                                """
+                                UPDATE games SET
+                                    metadata = metadata || %s::jsonb,
+                                    thumbnail_url = COALESCE(thumbnail_url, %s)
+                                WHERE id = %s
+                                """,
+                                (json.dumps(meta), icon_url, game_id),
+                            )
+                            conn.commit()
+                            total += 1
+                            logger.info(
+                                f"Updated details for game #{game_id} "
+                                f"({len(meta.get('screenshots', []))} screenshots, "
+                                f"description_source={meta.get('description_source')})"
+                            )
+
+                    except Exception as e:
+                        logger.warning(
+                            f"Detail fetch failed for {platform}/{platform_id}: {e}"
+                        )
+
                 try:
-                    details = asyncio.run(scraper.scrape_game_details(platform_id))
-                    if not details:
-                        continue
-
-                    # Build metadata update
-                    meta = {}
-                    if details.screenshots:
-                        meta["screenshots"] = details.screenshots[:5]
-                    if details.description:
-                        meta["description"] = details.description
-                    if details.icon_url:
-                        meta["icon_url"] = details.icon_url
-
-                    if meta:
-                        conn.execute(
-                            """
-                            UPDATE games SET
-                                metadata = metadata || %s::jsonb,
-                                thumbnail_url = COALESCE(thumbnail_url, %s)
-                            WHERE id = %s
-                            """,
-                            (json.dumps(meta), details.icon_url, game_id),
-                        )
-                        conn.commit()
-                        total += 1
-                        logger.info(
-                            f"Updated details for game #{game_id} "
-                            f"({len(details.screenshots)} screenshots)"
-                        )
-
-                except Exception as e:
-                    logger.warning(
-                        f"Detail fetch failed for {platform}/{platform_id}: {e}"
-                    )
-
-            try:
-                asyncio.run(scraper.close())
-            except RuntimeError:
-                pass
+                    asyncio.run(scraper.close())
+                except RuntimeError:
+                    pass
 
         logger.info(f"Details fetch complete: {total} games updated")
 
