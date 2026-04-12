@@ -25,8 +25,20 @@ logger = logging.getLogger(__name__)
 
 _UA = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-    "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+    "(KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36"
 )
+_BAIKE_HEADERS = {
+    "User-Agent": _UA,
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
+    "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
+    "Accept-Encoding": "gzip, deflate, br",
+    "Connection": "keep-alive",
+    "Sec-Fetch-Dest": "document",
+    "Sec-Fetch-Mode": "navigate",
+    "Sec-Fetch-Site": "none",
+    "Sec-Fetch-User": "?1",
+    "Upgrade-Insecure-Requests": "1",
+}
 _PAGE_DATA_RE = re.compile(
     r"window\.PAGE_DATA\s*=\s*(\{.*?\})\s*</script>",
     re.S,
@@ -356,6 +368,46 @@ def _parse_baike_html(
     return details, page_data
 
 
+def _warmup_cookies(client: httpx.Client) -> None:
+    """Hit baidu.com once to acquire a BAIDUID session cookie.
+
+    Baidu Baike returns 403 to requests without this cookie, especially
+    from datacenter IPs. The cookie is stored in the client's cookie jar
+    and reused for all subsequent requests.
+    """
+    if client.cookies.get("BAIDUID"):
+        return
+    try:
+        client.get("https://www.baidu.com", follow_redirects=True)
+        logger.debug(
+            f"[baidu_baike] cookie warmup done, "
+            f"BAIDUID={'yes' if client.cookies.get('BAIDUID') else 'no'}"
+        )
+    except Exception as exc:
+        logger.debug(f"[baidu_baike] cookie warmup failed: {exc}")
+
+
+def create_baike_client(
+    *,
+    timeout: float = 15.0,
+    proxy_url: str | None = None,
+) -> httpx.Client:
+    """Create an httpx.Client pre-configured for Baidu Baike scraping.
+
+    Callers should use this as a context manager and pass the client into
+    ``fetch_baike_game_details(client=...)`` to reuse cookies across a batch.
+    """
+    c = httpx.Client(
+        trust_env=False,
+        timeout=timeout,
+        follow_redirects=True,
+        proxy=proxy_url,
+        headers=_BAIKE_HEADERS,
+    )
+    _warmup_cookies(c)
+    return c
+
+
 def fetch_baike_game_details(
     game_name: str,
     *,
@@ -378,21 +430,12 @@ def fetch_baike_game_details(
         return None
 
     owned = client is None
-    proxy_url = None
     if owned:
         from src.utils.proxy import get_proxy_url
-        proxy_url = get_proxy_url()
-
-    c = client or httpx.Client(
-        trust_env=False,
-        timeout=timeout,
-        follow_redirects=True,
-        proxy=proxy_url,
-        headers={
-            "User-Agent": _UA,
-            "Accept-Language": "zh-CN,zh;q=0.9",
-        },
-    )
+        c = create_baike_client(timeout=timeout, proxy_url=get_proxy_url())
+    else:
+        _warmup_cookies(client)
+        c = client
 
     try:
         first_url = _build_item_url(game_name)
@@ -450,6 +493,7 @@ def fetch_baike_game_details(
 
 __all__ = [
     "BaikeGameDetails",
+    "create_baike_client",
     "fetch_baike_game_details",
     "_extract_page_data",
     "_parse_baike_html",

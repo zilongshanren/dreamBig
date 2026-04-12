@@ -282,7 +282,7 @@ def run_fetch_details():
     import json
     import httpx
 
-    from src.scrapers.baidu_baike import fetch_baike_game_details
+    from src.scrapers.baidu_baike import fetch_baike_game_details, create_baike_client
 
     with psycopg.connect(DB_URL) as conn:
         # Find games missing screenshots and/or description in metadata.
@@ -314,20 +314,7 @@ def run_fetch_details():
 
         total = 0
         from src.utils.proxy import get_proxy_url
-        with httpx.Client(
-            trust_env=False,
-            timeout=15,
-            follow_redirects=True,
-            proxy=get_proxy_url(),
-            headers={
-                "User-Agent": (
-                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                    "AppleWebKit/537.36 (KHTML, like Gecko) "
-                    "Chrome/124.0.0.0 Safari/537.36"
-                ),
-                "Accept-Language": "zh-CN,zh;q=0.9",
-            },
-        ) as baike_client:
+        with create_baike_client(proxy_url=get_proxy_url()) as baike_client:
             for platform, items in by_platform.items():
                 if platform not in SCRAPER_MAP:
                     continue
