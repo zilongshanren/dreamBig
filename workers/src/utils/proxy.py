@@ -11,7 +11,7 @@ logger = logging.getLogger(__name__)
 
 def get_proxy_url() -> str | None:
     """Get configured proxy URL from environment."""
-    return os.environ.get("SCRAPE_PROXY_URL")
+    return os.environ.get("SCRAPE_PROXY_URL") or None
 
 
 def get_proxy_list() -> list[str]:
