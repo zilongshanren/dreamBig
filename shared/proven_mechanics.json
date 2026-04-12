@@ -1,0 +1,312 @@
+{
+  "version": "v1",
+  "description": "Seed library for 80/20 组合创新 (combination innovation) analysis. Each entry is an ATOMIC mechanic that can be composed with others. LLM prompts use this as a whitelist candidate pool for inherited_mechanics — any tag not in this file is rejected as fabrication.",
+  "categories": {
+    "core_loop": "moment-to-moment gameplay actions (15 entries)",
+    "meta_loop": "long-arc progression / retention loops (8 entries)",
+    "monetization": "ad-variant monetization structures (4 entries)",
+    "social": "social / viral / network-effect loops (3 entries)"
+  },
+  "mechanics": [
+    {
+      "tag": "match3_chain",
+      "label_zh": "三消连击",
+      "label_en": "Match-3 Chain",
+      "category": "core_loop",
+      "maturity_level": 10,
+      "iaa_friendliness": 92,
+      "description": "玩家交换相邻方块形成 3 个以上同色消除并触发连锁反应",
+      "synonyms": ["三消", "消除", "连锁反应", "match three"]
+    },
+    {
+      "tag": "merge_upgrade",
+      "label_zh": "合成进阶",
+      "label_en": "Merge Upgrade",
+      "category": "core_loop",
+      "maturity_level": 10,
+      "iaa_friendliness": 95,
+      "description": "两个相同等级物品合成为下一等级，无限进阶解锁新内容",
+      "synonyms": ["合成", "合并", "进化", "merge two"]
+    },
+    {
+      "tag": "card_draft_roguelike",
+      "label_zh": "卡组构筑 Roguelike",
+      "label_en": "Card Draft Roguelike",
+      "category": "core_loop",
+      "maturity_level": 9,
+      "iaa_friendliness": 70,
+      "description": "每轮从随机卡池抽卡构筑临时卡组，死亡重开",
+      "synonyms": ["卡组构筑", "DBG", "Roguelike 卡牌", "deckbuilder"]
+    },
+    {
+      "tag": "tower_defense_wave",
+      "label_zh": "塔防波次",
+      "label_en": "Tower Defense Wave",
+      "category": "core_loop",
+      "maturity_level": 10,
+      "iaa_friendliness": 80,
+      "description": "玩家在路径两侧部署防御塔，抵御一波波来袭敌人",
+      "synonyms": ["塔防", "守卫战", "tower defense"]
+    },
+    {
+      "tag": "runner_one_tap",
+      "label_zh": "单指跑酷",
+      "label_en": "One-Tap Runner",
+      "category": "core_loop",
+      "maturity_level": 10,
+      "iaa_friendliness": 90,
+      "description": "角色自动前进，单指控制跳跃或切换轨道躲避障碍",
+      "synonyms": ["跑酷", "奔跑", "one tap runner"]
+    },
+    {
+      "tag": "puzzle_physics_drop",
+      "label_zh": "物理掉落解谜",
+      "label_en": "Physics-Drop Puzzle",
+      "category": "core_loop",
+      "maturity_level": 9,
+      "iaa_friendliness": 85,
+      "description": "利用重力或碰撞让物体落入目标区域如抽水切绳弹球",
+      "synonyms": ["物理解谜", "Ball sort", "where's my water"]
+    },
+    {
+      "tag": "sort_container",
+      "label_zh": "归类排序",
+      "label_en": "Sort Container",
+      "category": "core_loop",
+      "maturity_level": 9,
+      "iaa_friendliness": 94,
+      "description": "把混在一起的物品按颜色或类型分到对应容器",
+      "synonyms": ["水排序", "color sort", "water sort"]
+    },
+    {
+      "tag": "draw_path_puzzle",
+      "label_zh": "画线解谜",
+      "label_en": "Draw-Path Puzzle",
+      "category": "core_loop",
+      "maturity_level": 9,
+      "iaa_friendliness": 88,
+      "description": "玩家画线连接起点终点或引导小球避开陷阱",
+      "synonyms": ["画线", "DOP", "Draw One Part"]
+    },
+    {
+      "tag": "hypercasual_timing",
+      "label_zh": "超休闲时机判定",
+      "label_en": "Hypercasual Timing",
+      "category": "core_loop",
+      "maturity_level": 10,
+      "iaa_friendliness": 96,
+      "description": "单按键或单点击只需判断时机如 Stack Helix Jump",
+      "synonyms": ["hypercasual", "超休闲", "stack", "helix jump"]
+    },
+    {
+      "tag": "auto_battler_team",
+      "label_zh": "自走棋自动战斗",
+      "label_en": "Auto Battler Team",
+      "category": "core_loop",
+      "maturity_level": 9,
+      "iaa_friendliness": 65,
+      "description": "玩家阵前布阵后战斗自动进行只决定阵容与装备",
+      "synonyms": ["自走棋", "挂机战斗", "auto chess", "idle battle"]
+    },
+    {
+      "tag": "tycoon_simulation",
+      "label_zh": "大亨模拟经营",
+      "label_en": "Tycoon Simulation",
+      "category": "core_loop",
+      "maturity_level": 9,
+      "iaa_friendliness": 75,
+      "description": "建造经营一个店铺工厂或城镇获取收入再扩张",
+      "synonyms": ["模拟经营", "大亨", "tycoon", "restaurant sim"]
+    },
+    {
+      "tag": "word_chain_puzzle",
+      "label_zh": "文字成语解谜",
+      "label_en": "Word Chain Puzzle",
+      "category": "core_loop",
+      "maturity_level": 9,
+      "iaa_friendliness": 92,
+      "description": "玩家从字母池或字块中组合成有效单词或成语通关",
+      "synonyms": ["成语消除", "word search", "文字连线", "word cookies"]
+    },
+    {
+      "tag": "io_arena_pvp",
+      "label_zh": "io 多人擂台",
+      "label_en": "io Arena PvP",
+      "category": "core_loop",
+      "maturity_level": 8,
+      "iaa_friendliness": 70,
+      "description": "同一张实时地图内多人混战吃小鱼或抢资源升级",
+      "synonyms": ["io 游戏", "agar", "slither", "battle royale 休闲"]
+    },
+    {
+      "tag": "match_pattern_solitaire",
+      "label_zh": "麻将纸牌配对",
+      "label_en": "Match Pattern Solitaire",
+      "category": "core_loop",
+      "maturity_level": 10,
+      "iaa_friendliness": 88,
+      "description": "消除可配对的相同牌或按顺序堆叠如麻将连连看蜘蛛纸牌",
+      "synonyms": ["麻将", "连连看", "solitaire", "mahjong"]
+    },
+    {
+      "tag": "incremental_click",
+      "label_zh": "点击增量累积",
+      "label_en": "Incremental Click",
+      "category": "core_loop",
+      "maturity_level": 9,
+      "iaa_friendliness": 85,
+      "description": "玩家点击获取资源资源解锁被动生产器数值指数增长",
+      "synonyms": ["点击游戏", "cookie clicker", "增量游戏", "clicker"]
+    },
+    {
+      "tag": "idle_offline_gold",
+      "label_zh": "放置挂机离线收益",
+      "label_en": "Idle Offline Gold",
+      "category": "meta_loop",
+      "maturity_level": 10,
+      "iaa_friendliness": 98,
+      "description": "玩家下线期间游戏自动累积资源回归时领取",
+      "synonyms": ["放置", "挂机", "离线收益", "idle"]
+    },
+    {
+      "tag": "gacha_collection",
+      "label_zh": "抽卡收集",
+      "label_en": "Gacha Collection",
+      "category": "meta_loop",
+      "maturity_level": 10,
+      "iaa_friendliness": 50,
+      "description": "消耗货币随机获取角色或装备达成图鉴收集",
+      "synonyms": ["抽卡", "gacha", "抽奖", "扭蛋"]
+    },
+    {
+      "tag": "battle_pass_season",
+      "label_zh": "赛季通行证",
+      "label_en": "Battle Pass Season",
+      "category": "meta_loop",
+      "maturity_level": 10,
+      "iaa_friendliness": 40,
+      "description": "固定周期内通过任务积累赛季经验解锁阶梯奖励",
+      "synonyms": ["通行证", "赛季", "battle pass", "season pass"]
+    },
+    {
+      "tag": "daily_login_chain",
+      "label_zh": "连续登录奖励",
+      "label_en": "Daily Login Chain",
+      "category": "meta_loop",
+      "maturity_level": 10,
+      "iaa_friendliness": 60,
+      "description": "玩家连续 N 天登录解锁阶梯奖励断签重置",
+      "synonyms": ["连签", "每日登录", "签到", "daily reward"]
+    },
+    {
+      "tag": "collection_pokedex",
+      "label_zh": "图鉴收集",
+      "label_en": "Collection Pokedex",
+      "category": "meta_loop",
+      "maturity_level": 10,
+      "iaa_friendliness": 55,
+      "description": "玩家通过游戏收集所有可用物种或卡片达成完整图鉴",
+      "synonyms": ["图鉴", "收集", "pokedex", "compendium"]
+    },
+    {
+      "tag": "farm_harvest_cycle",
+      "label_zh": "农场种植循环",
+      "label_en": "Farm Harvest Cycle",
+      "category": "meta_loop",
+      "maturity_level": 10,
+      "iaa_friendliness": 72,
+      "description": "玩家种植作物等待成熟收获再用收入扩展农场",
+      "synonyms": ["农场", "种植", "farm", "harvest"]
+    },
+    {
+      "tag": "limited_time_event",
+      "label_zh": "限时活动",
+      "label_en": "Limited Time Event",
+      "category": "meta_loop",
+      "maturity_level": 10,
+      "iaa_friendliness": 65,
+      "description": "固定周期内推出特殊活动或关卡限时结束后奖励消失",
+      "synonyms": ["限时", "活动", "LTE", "event"]
+    },
+    {
+      "tag": "ranked_ladder_mmr",
+      "label_zh": "段位排行 MMR",
+      "label_en": "Ranked Ladder MMR",
+      "category": "meta_loop",
+      "maturity_level": 10,
+      "iaa_friendliness": 45,
+      "description": "玩家通过胜负积分变化上下段位形成长期目标",
+      "synonyms": ["段位", "排行榜", "mmr", "rank"]
+    },
+    {
+      "tag": "rewarded_revive",
+      "label_zh": "看广告复活",
+      "label_en": "Rewarded Revive",
+      "category": "monetization",
+      "maturity_level": 10,
+      "iaa_friendliness": 100,
+      "description": "玩家失败后观看激励视频换取立即复活一次",
+      "synonyms": ["激励视频复活", "rewarded video revive", "continue"]
+    },
+    {
+      "tag": "double_offline_reward",
+      "label_zh": "双倍离线奖励",
+      "label_en": "Double Offline Reward",
+      "category": "monetization",
+      "maturity_level": 10,
+      "iaa_friendliness": 100,
+      "description": "登录后弹出离线收益结算观看广告可双倍领取",
+      "synonyms": ["双倍奖励", "double reward", "offline boost"]
+    },
+    {
+      "tag": "interstitial_level_gate",
+      "label_zh": "关卡间插屏",
+      "label_en": "Interstitial Level Gate",
+      "category": "monetization",
+      "maturity_level": 10,
+      "iaa_friendliness": 90,
+      "description": "玩家完成关卡进入下一关前弹出全屏插屏广告",
+      "synonyms": ["关卡插屏", "interstitial", "level end ad"]
+    },
+    {
+      "tag": "rewarded_skip_wait",
+      "label_zh": "看广告跳过等待",
+      "label_en": "Rewarded Skip Wait",
+      "category": "monetization",
+      "maturity_level": 10,
+      "iaa_friendliness": 100,
+      "description": "建造或生产需要等待时观看广告可立即完成",
+      "synonyms": ["跳过等待", "加速", "skip timer", "rush"]
+    },
+    {
+      "tag": "guild_social",
+      "label_zh": "公会社交",
+      "label_en": "Guild Social",
+      "category": "social",
+      "maturity_level": 10,
+      "iaa_friendliness": 30,
+      "description": "玩家组队加入公会共享资源合作 boss",
+      "synonyms": ["公会", "联盟", "guild", "clan"]
+    },
+    {
+      "tag": "friend_leaderboard",
+      "label_zh": "好友排行榜",
+      "label_en": "Friend Leaderboard",
+      "category": "social",
+      "maturity_level": 10,
+      "iaa_friendliness": 75,
+      "description": "玩家可看到微信好友在相同玩法里的分数排名",
+      "synonyms": ["好友榜", "排行榜", "friend rank", "leaderboard"]
+    },
+    {
+      "tag": "referral_invite",
+      "label_zh": "邀请裂变",
+      "label_en": "Referral Invite",
+      "category": "social",
+      "maturity_level": 9,
+      "iaa_friendliness": 80,
+      "description": "玩家分享邀请链接给新玩家双方获得奖励",
+      "synonyms": ["邀请有奖", "裂变", "referral", "share rewards"]
+    }
+  ]
+}

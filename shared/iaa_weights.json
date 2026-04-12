@@ -1,0 +1,32 @@
+{
+  "version": "v1",
+  "description": "IAA 变现适配度 (iaa score) weights — independent from breakout judgment. Measures whether the game's structure supports ad monetization (rewarded video opportunities, placement fit, monetization risk).",
+  "dimensions": {
+    "placement_fit": 0.35,
+    "genre_iaa_fit": 0.25,
+    "ad_opportunities": 0.20,
+    "monetization_risk": 0.10,
+    "cross_platform": 0.10
+  },
+  "thresholds": {
+    "high_iaa": 75,
+    "medium_iaa": 50,
+    "low_iaa": 25
+  },
+  "placement_fit_params": {
+    "ideal_placements_per_session": 3,
+    "rewarded_weight": 1.0,
+    "interstitial_weight": 0.6,
+    "banner_weight": 0.3
+  },
+  "monetization_risk_params": {
+    "max_risks_listed": 5,
+    "critical_risk_penalty": 40,
+    "moderate_risk_penalty": 15
+  },
+  "ad_opportunities_params": {
+    "creatives_high_threshold": 100,
+    "creatives_medium_threshold": 20,
+    "unique_advertisers_bonus": 5
+  }
+}

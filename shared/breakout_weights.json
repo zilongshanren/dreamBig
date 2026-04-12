@@ -1,0 +1,48 @@
+{
+  "version": "v1",
+  "description": "爆款潜质 (breakout score) weights — independent from IAA monetization fit. Measures whether the game's mechanic combination is healthy, validated in market, and carries the ranking momentum of a real hit.",
+  "dimensions": {
+    "mechanic_maturity": 0.30,
+    "combination_health": 0.25,
+    "ranking_velocity": 0.20,
+    "market_validation": 0.15,
+    "social_buzz": 0.10
+  },
+  "thresholds": {
+    "high_breakout": 75,
+    "medium_breakout": 50,
+    "low_breakout": 25
+  },
+  "combination_health_params": {
+    "healthy_maturity_low": 0.70,
+    "healthy_maturity_high": 0.85,
+    "copycat_penalty": 60,
+    "radical_penalty": 40,
+    "classic_stack_penalty": 25,
+    "unknown_default": 50
+  },
+  "market_validation_params": {
+    "undervalidated_max": 2,
+    "healthy_min": 3,
+    "healthy_max": 15,
+    "saturation_min": 16,
+    "saturation_max": 30,
+    "red_ocean_min": 31,
+    "undervalidated_score": 40,
+    "healthy_score": 90,
+    "saturation_score": 60,
+    "red_ocean_score": 30
+  },
+  "ranking_velocity_params": {
+    "window_days": 14,
+    "min_data_points": 3
+  },
+  "social_buzz_params": {
+    "platform_weights": {
+      "douyin": 1.0,
+      "bilibili": 0.8,
+      "tiktok": 0.9,
+      "youtube": 0.7
+    }
+  }
+}

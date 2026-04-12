@@ -27,6 +27,12 @@ model Game {
   pleasurePoints String[] @default([]) @map("pleasure_points")
   replayDrivers  String[] @default([]) @map("replay_drivers")
   iaaGrade       String?  @map("iaa_grade")
+  // ---- 80/20 组合创新拆解 (Sprint 1 deep fix) ----
+  inheritedMechanics String[] @default([]) @map("inherited_mechanics")
+  innovationPoints   String[] @default([]) @map("innovation_points")
+  maturityRatio      Decimal? @db.Decimal(3, 2) @map("maturity_ratio")
+  innovationRatio    Decimal? @db.Decimal(3, 2) @map("innovation_ratio")
+  combinationPattern String?  @map("combination_pattern")
   createdAt      DateTime @default(now()) @map("created_at")
   updatedAt      DateTime @default(now()) @updatedAt @map("updated_at")
 
@@ -149,6 +155,16 @@ model PotentialScore {
   ratingQuality    Int      @default(0) @map("rating_quality") @db.SmallInt
   competitionGap   Int      @default(0) @map("competition_gap") @db.SmallInt
   adActivity       Int      @default(0) @map("ad_activity") @db.SmallInt
+  // ---- Sprint 1 deep fix: breakout + iaa 双轨 (shadow mode) ----
+  breakoutScore     Int?     @map("breakout_score") @db.SmallInt
+  mechanicMaturity  Int      @default(0) @map("mechanic_maturity") @db.SmallInt
+  combinationHealth Int      @default(0) @map("combination_health") @db.SmallInt
+  marketValidation  Int      @default(0) @map("market_validation") @db.SmallInt
+  iaaScore          Int?     @map("iaa_score") @db.SmallInt
+  placementFit      Int      @default(0) @map("placement_fit") @db.SmallInt
+  monetizationRisk  Int      @default(0) @map("monetization_risk") @db.SmallInt
+  adOpportunities   Int      @default(0) @map("ad_opportunities") @db.SmallInt
+  genreIaaFit       Int      @default(0) @map("genre_iaa_fit") @db.SmallInt
   algorithmVersion String   @default("v1") @map("algorithm_version")
   scoredAt         DateTime @map("scored_at") @db.Date
 
@@ -645,4 +661,27 @@ model GameWebSource {
   @@index([gameId, fetchedAt(sort: Desc)])
   @@index([ttlExpiresAt])
   @@map("game_web_sources")
+}
+
+// ============================================================
+// Sprint 1 deep fix — Proven mechanics reference library
+// 用途：LLM prompt 的白名单候选池，防止 LLM 编造 tag；
+//      也是 scoring._calc_mechanic_maturity 的查表基础。
+// 初始化：shared/proven_mechanics.json → seed_proven_mechanics.py
+// ============================================================
+model ProvenMechanic {
+  id               Int      @id @default(autoincrement())
+  tag              String   @unique
+  labelZh          String   @map("label_zh")
+  labelEn          String   @map("label_en")
+  category         String // core_loop / meta_loop / monetization / social
+  maturityLevel    Int      @default(5) @map("maturity_level") @db.SmallInt
+  iaaFriendliness  Int      @default(50) @map("iaa_friendliness") @db.SmallInt
+  description      String   @db.Text
+  referenceGameIds Int[]    @default([]) @map("reference_game_ids")
+  synonyms         String[] @default([])
+  createdAt        DateTime @default(now()) @map("created_at")
+
+  @@index([category])
+  @@map("proven_mechanics")
 }
