@@ -24,9 +24,11 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+from datetime import datetime, timedelta, timezone
 from datetime import date
 from typing import Any
 
+import httpx
 import psycopg
 
 from src.llm import PoeClient, get_model_for_task
@@ -35,11 +37,19 @@ from src.llm.prompts.gameplay_intel import (
     GameplayIntelReport,
     build_gameplay_intel_messages,
 )
+from src.scrapers.gameplay_web import (
+    WebSource,
+    fetch_page_content,
+    search_bing_for_game,
+)
 
 logger = logging.getLogger(__name__)
 
 PROMPT_VERSION = GAMEPLAY_INTEL_PROMPT.version  # "v1"
 DEFAULT_CONCURRENCY = 4
+WEB_CACHE_TTL = timedelta(days=7)
+WEB_SOURCES_PER_GAME = 8
+WEB_BODY_MAX_CHARS = 800
 
 
 # ============================================================
@@ -99,7 +109,9 @@ def _gather_game_sources(
 
     Returns None if the game row doesn't even exist; always returns a
     dict otherwise — callers must inspect the blocks to know if the
-    evidence is thin.
+    evidence is thin. Web sources (game_web_sources table) are read
+    from cache here; the fresh-fetch step happens in ``_refresh_web_sources``
+    before calling this function.
     """
     game_row = conn.execute(
         """
@@ -159,6 +171,19 @@ def _gather_game_sources(
         (game_id,),
     ).fetchall()
 
+    web_rows = conn.execute(
+        """
+        SELECT source_site, url, title, snippet, content_text
+        FROM game_web_sources
+        WHERE game_id = %s
+          AND content_text IS NOT NULL
+          AND LENGTH(content_text) > 0
+        ORDER BY fetched_at DESC
+        LIMIT %s
+        """,
+        (game_id, WEB_SOURCES_PER_GAME),
+    ).fetchall()
+
     return {
         "game_id": int(game_row[0]),
         "name": game_row[1],
@@ -183,7 +208,128 @@ def _gather_game_sources(
             }
             for r in hook_rows
         ],
+        "web_sources": [
+            {
+                "source_site": r[0],
+                "url": r[1],
+                "title": r[2] or "",
+                "snippet": r[3] or "",
+                "content": r[4] or "",
+            }
+            for r in web_rows
+        ],
     }
+
+
+def _refresh_web_sources(
+    conn: psycopg.Connection,
+    game_id: int,
+    game_name: str,
+) -> int:
+    """Run Bing search → page fetch → upsert into game_web_sources.
+
+    Skips pages that are already cached within ``WEB_CACHE_TTL``. Returns
+    the number of rows written (including refreshed ones).
+    """
+    # Which urls are still fresh in cache? Don't burn a network request.
+    cached_urls_row = conn.execute(
+        """
+        SELECT url FROM game_web_sources
+        WHERE game_id = %s AND ttl_expires_at > NOW()
+        """,
+        (game_id,),
+    ).fetchall()
+    cached_urls = {r[0] for r in cached_urls_row}
+
+    try:
+        hits = search_bing_for_game(game_name)
+    except Exception as exc:
+        logger.warning(
+            f"[gameplay_intel] Bing search failed for game {game_id} "
+            f"({game_name}): {exc}"
+        )
+        return 0
+
+    if not hits:
+        logger.info(
+            f"[gameplay_intel] Bing returned 0 hits for {game_name}"
+        )
+        return 0
+
+    fresh_hits = [h for h in hits if h["url"] not in cached_urls]
+    if not fresh_hits:
+        logger.info(
+            f"[gameplay_intel] game {game_id} ({game_name}): "
+            f"all {len(hits)} hits already cached"
+        )
+        return 0
+
+    # Fetch up to WEB_SOURCES_PER_GAME fresh pages via a shared client.
+    written = 0
+    ttl_cutoff = datetime.now(timezone.utc) + WEB_CACHE_TTL
+    with httpx.Client(
+        trust_env=False, timeout=15, follow_redirects=True
+    ) as client:
+        for h in fresh_hits[: WEB_SOURCES_PER_GAME * 2]:
+            if written >= WEB_SOURCES_PER_GAME:
+                break
+            try:
+                result = fetch_page_content(
+                    h["url"],
+                    game_name,
+                    client=client,
+                    max_chars=WEB_BODY_MAX_CHARS,
+                )
+            except Exception as exc:
+                logger.debug(
+                    f"[gameplay_intel] fetch failed for "
+                    f"{h['url'][:80]}: {exc}"
+                )
+                result = None
+
+            content = (result or {}).get("body") or ""
+            # Even pages that failed relevance still give us title+snippet
+            # from Bing — we persist them with empty content_text so the
+            # query doesn't re-issue them within the TTL window.
+            conn.execute(
+                """
+                INSERT INTO game_web_sources (
+                    game_id, source_site, url, title, snippet,
+                    content_text, query, http_status,
+                    fetched_at, ttl_expires_at
+                ) VALUES (
+                    %s, %s, %s, %s, %s, %s, %s, %s, NOW(), %s
+                )
+                ON CONFLICT (game_id, source_site, url) DO UPDATE SET
+                    title = EXCLUDED.title,
+                    snippet = EXCLUDED.snippet,
+                    content_text = EXCLUDED.content_text,
+                    query = EXCLUDED.query,
+                    http_status = EXCLUDED.http_status,
+                    fetched_at = NOW(),
+                    ttl_expires_at = EXCLUDED.ttl_expires_at
+                """,
+                (
+                    game_id,
+                    h["source_site"],
+                    h["url"],
+                    h["title"][:500],
+                    (h["snippet"] or "")[:800],
+                    content,
+                    h.get("query"),
+                    h.get("http_status"),
+                    ttl_cutoff,
+                ),
+            )
+            if content:
+                written += 1
+    conn.commit()
+    logger.info(
+        f"[gameplay_intel] game {game_id} ({game_name}): "
+        f"fetched {written} new web sources "
+        f"({len(cached_urls)} previously cached)"
+    )
+    return written
 
 
 # ============================================================
@@ -228,6 +374,31 @@ def _fmt_hooks(rows: list[dict[str, Any]]) -> str:
     return "\n".join(lines)
 
 
+def _fmt_web_sources(rows: list[dict[str, Any]]) -> str:
+    if not rows:
+        return (
+            "（未从公开 Web 抓到任何可读正文 — Bing 搜索无结果 / "
+            "页面 403 / 内容过短。你在 rationale 里不得引用"
+            "'媒体报道/玩家社区'作证据）"
+        )
+    lines = []
+    for i, r in enumerate(rows):
+        snippet = (r.get("snippet") or "").strip()
+        content = (r.get("content") or "").strip()
+        # Use content when available; otherwise snippet
+        body = content if content else snippet
+        if len(body) > 500:
+            body = body[:500] + "…"
+        title = (r.get("title") or "").strip()
+        site = r.get("source_site") or "web"
+        lines.append(
+            f"--- [{i}] {site} | {title[:60]}\n"
+            f"    url: {r.get('url', '')[:120]}\n"
+            f"    body: {body}"
+        )
+    return "\n".join(lines)
+
+
 def _estimate_evidence_sources(sources: dict[str, Any]) -> int:
     """Count distinct input blocks that actually carry evidence."""
     n = 0
@@ -239,6 +410,10 @@ def _estimate_evidence_sources(sources: dict[str, Any]) -> int:
         n += 1
     if sources.get("hooks"):
         n += 1
+    # Count web sources as one bucket regardless of count.
+    web = sources.get("web_sources") or []
+    if any((w.get("content") or "").strip() for w in web):
+        n += 1
     return n
 
 
@@ -248,9 +423,12 @@ def _source_breakdown(sources: dict[str, Any]) -> str:
     shots = sources.get("screenshots") or []
     topics = sources.get("review_topics") or []
     hooks = sources.get("hooks") or []
+    web = sources.get("web_sources") or []
+    web_with_body = sum(1 for w in web if (w.get("content") or "").strip())
     return (
         f"desc_len={len(desc)} shots={len(shots)} "
-        f"topics={len(topics)} hooks={len(hooks)}"
+        f"topics={len(topics)} hooks={len(hooks)} "
+        f"web={web_with_body}/{len(web)}"
     )
 
 
@@ -270,13 +448,18 @@ def _build_stub_intel(sources: dict[str, Any]) -> dict[str, Any]:
         missing.append("玩家评论话题聚类未生成（topic_clustering 尚未产出）")
     if not sources.get("hooks"):
         missing.append("社媒 hook 短句未抽取（hook_extraction 尚未产出）")
+    web = sources.get("web_sources") or []
+    if not any((w.get("content") or "").strip() for w in web):
+        missing.append(
+            "公开 Web 抓取零正文（Bing 0 结果 / 页面 403 / 内容过短）"
+        )
 
     return {
         "gameplay_intro": (
             "暂无足够公开资料可供分析——应用宝 editor_intro、截图、"
-            "玩家评论话题和社媒 hook 均未进入数据管道。"
-            "请先运行 run_fetch_details 回填 metadata.description / "
-            "metadata.screenshots，本记录会在下一次调度时自动刷新。"
+            "玩家评论话题、社媒 hook 和公开 Web 媒体正文均未进入数据管道。"
+            "请先运行 run_fetch_details + gameplay_intel 一套完整流程"
+            "（会顺带抓 Bing 公开资料），本记录会在下一次调度时自动刷新。"
         ),
         "features": [],
         "art_style_primary": None,
@@ -307,9 +490,30 @@ class GameplayIntelGenerator:
     async def generate_one(
         self, conn: psycopg.Connection, game_id: int
     ) -> dict[str, Any] | None:
+        # Step 1: look up the game so we know its display name.
+        name_row = conn.execute(
+            "SELECT COALESCE(name_zh, name_en, '') FROM games WHERE id = %s",
+            (game_id,),
+        ).fetchone()
+        if not name_row or not name_row[0]:
+            logger.debug(f"[gameplay_intel] game {game_id} not found")
+            return None
+        game_name = name_row[0]
+
+        # Step 2: refresh the Bing-backed web sources cache for this game.
+        # Cached hits within 7 days are reused as-is.
+        try:
+            _refresh_web_sources(conn, game_id, game_name)
+        except Exception as exc:
+            logger.warning(
+                f"[gameplay_intel] web refresh failed for game {game_id} "
+                f"({game_name}): {exc} — continuing with existing cache"
+            )
+
+        # Step 3: gather ALL input blocks (now including fresh web rows).
         sources = _gather_game_sources(conn, game_id)
         if sources is None:
-            logger.debug(f"[gameplay_intel] game {game_id} not found")
+            logger.debug(f"[gameplay_intel] game {game_id} vanished mid-run")
             return None
 
         breakdown = _source_breakdown(sources)
@@ -352,6 +556,7 @@ class GameplayIntelGenerator:
             screenshots_block=_fmt_screenshots(sources["screenshots"]),
             review_topics_block=_fmt_review_topics(sources["review_topics"]),
             hook_phrases_block=_fmt_hooks(sources["hooks"]),
+            web_sources_block=_fmt_web_sources(sources.get("web_sources") or []),
         )
 
         model = get_model_for_task("gameplay_intel")
