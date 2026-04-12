@@ -1043,13 +1043,58 @@ def poll_internal_jobs() -> None:
 
                     game_id = int(payload.get("gameId"))
                     gen = ReportGenerator(DB_URL)
-                    asyncio.run(gen.generate_for_game(game_id))
-                    asyncio.run(gen.client.close())
-                    conn.execute(
-                        "UPDATE scrape_jobs SET status='success', items_scraped=1, finished_at=NOW() WHERE id=%s",
-                        (job_id,),
-                    )
-                    logger.info(f"Internal job {job_id}: report_generation for game {game_id} done")
+                    try:
+                        result = asyncio.run(gen.generate_for_game(game_id))
+                    finally:
+                        try:
+                            asyncio.run(gen.client.close())
+                        except Exception:
+                            pass
+                    if result is None:
+                        # generate_for_game returned None — it hit one of the
+                        # six skip paths (no review topics, insufficient
+                        # context, low confidence, LLM error, persist fail,
+                        # game missing). Mark failed so the UI tells the
+                        # truth instead of silently lying "success".
+                        reason = (
+                            "generate_for_game returned None. Most common "
+                            "cause: no review_topic_summaries rows for this "
+                            "game yet (need scrape_reviews + sentiment + "
+                            "topic_extraction + topic_clustering to run "
+                            "first). Other causes: overall_confidence below "
+                            f"{0.4}, LLM call failed, or persist error. "
+                            "Check scraper logs around "
+                            "started_at for the exact logger line."
+                        )
+                        conn.execute(
+                            """
+                            UPDATE scrape_jobs
+                               SET status = 'failed',
+                                   items_scraped = 0,
+                                   error_message = %s,
+                                   finished_at = NOW()
+                             WHERE id = %s
+                            """,
+                            (
+                                _json.dumps(
+                                    {"gameId": game_id, "reason": reason}
+                                ),
+                                job_id,
+                            ),
+                        )
+                        logger.warning(
+                            f"Internal job {job_id}: report_generation for "
+                            f"game {game_id} returned None — marked FAILED"
+                        )
+                    else:
+                        conn.execute(
+                            "UPDATE scrape_jobs SET status='success', items_scraped=1, finished_at=NOW() WHERE id=%s",
+                            (job_id,),
+                        )
+                        logger.info(
+                            f"Internal job {job_id}: report_generation for "
+                            f"game {game_id} done"
+                        )
                 elif job_type == "experiment_suggest":
                     game_id = int(payload.get("gameId"))
                     from src.processors.experiment_advisor import run_experiment_suggest

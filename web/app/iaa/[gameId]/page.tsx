@@ -58,6 +58,40 @@ async function getGameWithReport(id: number) {
   }
 }
 
+/**
+ * Find the latest internal report_generation job for a given game so
+ * the "no report yet" state can show the real last-attempt status
+ * (pending / running / success / failed) with any error reason from
+ * scrape_jobs.error_message, instead of a silent black hole.
+ */
+async function getLatestReportJob(gameId: number) {
+  try {
+    const jobs = await prisma.scrapeJob.findMany({
+      where: {
+        platform: "internal",
+        jobType: "report_generation",
+        errorMessage: { contains: `"gameId":${gameId}` },
+      },
+      orderBy: { id: "desc" },
+      take: 1,
+    });
+    return jobs[0] ?? null;
+  } catch {
+    return null;
+  }
+}
+
+function parseJobPayload(
+  raw: string | null
+): { gameId?: number; reason?: string; url?: string } | null {
+  if (!raw) return null;
+  try {
+    return JSON.parse(raw);
+  } catch {
+    return { reason: raw };
+  }
+}
+
 export default async function IaaDetailPage({
   params,
 }: {
@@ -73,8 +107,30 @@ export default async function IaaDetailPage({
   const report = game.gameReport;
   const score = game.potentialScores[0];
 
-  // No report yet → friendly state
+  // No report yet → show the real last-job status instead of a silent
+  // empty state (previously the UI would just keep saying "queued" even
+  // when poll_internal_jobs had already failed the job).
   if (!report) {
+    const lastJob = await getLatestReportJob(id);
+    const jobPayload = parseJobPayload(lastJob?.errorMessage ?? null);
+    const jobReason = jobPayload?.reason ?? null;
+
+    // Check whether game 4589 has the minimum evidence we need:
+    // review topic summaries. That's the #1 reason generate_for_game
+    // returns None (line 242 of report_generator.py).
+    let topicCount = 0;
+    let reviewCount = 0;
+    try {
+      topicCount = await prisma.reviewTopicSummary.count({
+        where: { gameId: id },
+      });
+      reviewCount = await prisma.review.count({
+        where: { platformListing: { gameId: id } },
+      });
+    } catch {
+      // best-effort
+    }
+
     return (
       <div>
         {/* Breadcrumb */}
@@ -102,14 +158,110 @@ export default async function IaaDetailPage({
           </div>
         </div>
 
-        <div className="bg-white rounded-lg shadow p-8 text-center">
-          <p className="text-gray-600 text-base mb-2">
-            此游戏尚未生成 IAA 分析报告
-          </p>
-          <p className="text-gray-400 text-sm mb-6">
-            点击下方按钮立即生成，任务将进入后台队列
-          </p>
-          <GenerateReportButton gameId={game.id} />
+        <div className="bg-white rounded-lg shadow p-8 space-y-5">
+          <div className="text-center">
+            <p className="text-gray-600 text-base mb-1">
+              此游戏尚未生成 IAA 分析报告
+            </p>
+            <p className="text-gray-400 text-sm">
+              点击下方按钮立即生成，任务将进入后台队列
+            </p>
+          </div>
+
+          {/* Evidence pre-check — tells the user BEFORE they click whether
+              the generator will have enough data to produce a real report. */}
+          <div className="bg-gray-50 rounded-lg p-4 border border-gray-200">
+            <p className="text-xs font-semibold text-gray-600 uppercase tracking-wide mb-2">
+              数据状态（生成前检查）
+            </p>
+            <ul className="space-y-1 text-sm">
+              <li className="flex items-center gap-2">
+                <span
+                  className={
+                    reviewCount > 0 ? "text-green-600" : "text-red-500"
+                  }
+                >
+                  {reviewCount > 0 ? "✓" : "✗"}
+                </span>
+                <span className="text-gray-700">
+                  评论数：<span className="font-mono">{reviewCount}</span>
+                </span>
+              </li>
+              <li className="flex items-center gap-2">
+                <span
+                  className={
+                    topicCount > 0 ? "text-green-600" : "text-red-500"
+                  }
+                >
+                  {topicCount > 0 ? "✓" : "✗"}
+                </span>
+                <span className="text-gray-700">
+                  已聚类话题：<span className="font-mono">{topicCount}</span>
+                  {topicCount === 0 && (
+                    <span className="text-red-500 ml-2 text-xs">
+                      （报告生成器需要至少 1 条）
+                    </span>
+                  )}
+                </span>
+              </li>
+            </ul>
+            {topicCount === 0 && (
+              <p className="mt-3 text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded px-3 py-2">
+                ⚠ 这个游戏还没有任何评论话题聚类。即使生成任务进入队列，
+                Opus 也会因缺乏证据而跳过（返回 None），报告不会落库。
+                请先运行完整 pipeline：
+                <code className="block mt-1 bg-white px-2 py-1 rounded font-mono text-[11px]">
+                  scrape_reviews → sentiment_classification → topic_extraction → topic_clustering
+                </code>
+                补齐证据后再点"立即生成"。
+              </p>
+            )}
+          </div>
+
+          {/* Last attempt status, if any */}
+          {lastJob && (
+            <div
+              className={`rounded-lg p-4 border text-sm ${
+                lastJob.status === "failed"
+                  ? "bg-red-50 border-red-200"
+                  : lastJob.status === "running"
+                    ? "bg-blue-50 border-blue-200"
+                    : "bg-gray-50 border-gray-200"
+              }`}
+            >
+              <p className="text-xs font-semibold uppercase tracking-wide mb-1 text-gray-600">
+                最近一次生成任务
+              </p>
+              <p className="text-xs text-gray-500">
+                状态：
+                <span
+                  className={`font-mono ml-1 ${
+                    lastJob.status === "failed"
+                      ? "text-red-700"
+                      : lastJob.status === "success"
+                        ? "text-green-700"
+                        : "text-blue-700"
+                  }`}
+                >
+                  {lastJob.status}
+                </span>
+                {lastJob.finishedAt && (
+                  <span className="ml-2 text-gray-400">
+                    · {lastJob.finishedAt.toLocaleString("zh-CN")}
+                  </span>
+                )}
+              </p>
+              {jobReason && (
+                <p className="text-xs text-gray-600 mt-2 leading-relaxed">
+                  原因：{jobReason}
+                </p>
+              )}
+            </div>
+          )}
+
+          <div className="flex justify-center">
+            <GenerateReportButton gameId={game.id} />
+          </div>
         </div>
       </div>
     );
