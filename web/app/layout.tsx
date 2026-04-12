@@ -46,6 +46,9 @@ export default async function RootLayout({
 
   return (
     <html lang="zh-CN" className="h-full">
+      <head>
+        <meta name="referrer" content="no-referrer" />
+      </head>
       <body className="h-full bg-gray-50 text-gray-900 antialiased" style={{ fontFamily: '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif' }}>
         <div className="flex h-full">
           {/* Desktop Sidebar */}
