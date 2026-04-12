@@ -102,34 +102,51 @@ async function getStatCards() {
   }
 }
 
-async function getChartTop10(chartKey: string): Promise<RankRow[]> {
+async function getChartTop10(
+  chartKey: string
+): Promise<{ rows: RankRow[]; snapshotDate: Date | null }> {
+  // Resilient: use the latest available snapshot_date for this chart,
+  // not "today" specifically. If the scraper missed a day (container
+  // restart, network issue, etc.) the dashboard still shows yesterday's
+  // data with a "last updated" badge instead of rendering a blank card.
   try {
-    const today = todayDate();
     const rows = await prisma.rankingSnapshot.findMany({
       where: {
         chartType: chartKey,
-        snapshotDate: today,
         platformListing: { platform: "wechat_mini" },
       },
-      orderBy: { rankPosition: "asc" },
-      take: 10,
+      orderBy: [
+        { snapshotDate: "desc" },
+        { rankPosition: "asc" },
+      ],
+      take: 50,
       include: {
-        platformListing: {
-          include: { game: true },
-        },
+        platformListing: { include: { game: true } },
       },
     });
-    return rows.map((r) => ({
-      rank_position: r.rankPosition,
-      rank_change: r.rankChange,
-      game_id: r.platformListing.gameId,
-      name: r.platformListing.name,
-      name_zh: r.platformListing.game.nameZh,
-      developer: r.platformListing.game.developer,
-      icon: r.platformListing.game.thumbnailUrl,
-    }));
+    if (rows.length === 0) {
+      return { rows: [], snapshotDate: null };
+    }
+    const latestDate = rows[0].snapshotDate;
+    const latestRows = rows
+      .filter(
+        (r) => r.snapshotDate.getTime() === latestDate.getTime()
+      )
+      .slice(0, 10);
+    return {
+      rows: latestRows.map((r) => ({
+        rank_position: r.rankPosition,
+        rank_change: r.rankChange,
+        game_id: r.platformListing.gameId,
+        name: r.platformListing.name,
+        name_zh: r.platformListing.game.nameZh,
+        developer: r.platformListing.game.developer,
+        icon: r.platformListing.game.thumbnailUrl,
+      })),
+      snapshotDate: latestDate,
+    };
   } catch {
-    return [];
+    return { rows: [], snapshotDate: null };
   }
 }
 
@@ -407,19 +424,36 @@ function ChartCard({
   title,
   subtitle,
   rows,
+  snapshotDate,
   viewAllHref,
 }: {
   title: string;
   subtitle: string;
   rows: RankRow[];
+  snapshotDate: Date | null;
   viewAllHref: string;
 }) {
+  const todayKey = new Date().toISOString().split("T")[0];
+  const snapKey = snapshotDate?.toISOString().split("T")[0] ?? null;
+  const isStale = snapKey !== null && snapKey !== todayKey;
   return (
     <div className="bg-white rounded-lg shadow p-4">
       <div className="flex items-end justify-between mb-3">
         <div>
           <h3 className="font-semibold text-base">{title}</h3>
-          <p className="text-xs text-gray-400">{subtitle}</p>
+          <p className="text-xs text-gray-400">
+            {subtitle}
+            {snapKey && (
+              <span
+                className={`ml-2 font-mono ${
+                  isStale ? "text-amber-600" : "text-gray-400"
+                }`}
+              >
+                · {snapKey}
+                {isStale && " (旧)"}
+              </span>
+            )}
+          </p>
         </div>
         <Link
           href={viewAllHref}
@@ -759,8 +793,10 @@ export default async function WechatDashboardPage() {
     getLatestWechatIntel(),
   ]);
 
-  // Parallel array aligned with ALL_CHARTS order
-  const chartData: Array<RankRow[]> = [
+  // Parallel array aligned with ALL_CHARTS order.
+  // Each entry is now { rows, snapshotDate } so the chart card can
+  // render a "last updated" badge when the data is older than today.
+  const chartData: Array<{ rows: RankRow[]; snapshotDate: Date | null }> = [
     hotChart,
     grossingChart,
     newChart,
@@ -772,6 +808,20 @@ export default async function WechatDashboardPage() {
     tagAdventure,
     tagSingleplayer,
   ];
+
+  // Compute the most recent snapshot across all 10 charts so we can
+  // warn at the page level if the scraper is behind.
+  const latestSnapshotAcross: Date | null = chartData.reduce<Date | null>(
+    (acc, c) => {
+      if (!c.snapshotDate) return acc;
+      if (!acc) return c.snapshotDate;
+      return c.snapshotDate > acc ? c.snapshotDate : acc;
+    },
+    null
+  );
+  const todayKey = new Date().toISOString().split("T")[0];
+  const latestKey = latestSnapshotAcross?.toISOString().split("T")[0] ?? null;
+  const scraperIsStale = latestKey !== null && latestKey !== todayKey;
 
   const intelPayload: IntelPayload | null = (() => {
     if (!latestIntel) return null;
@@ -793,6 +843,16 @@ export default async function WechatDashboardPage() {
         <p className="text-sm text-gray-500 mt-1">
           围绕打造微信小游戏 IAA 爆款的核心信号 · 数据每日 06:40 - 06:49 HKT 更新
         </p>
+        {scraperIsStale && latestKey && (
+          <div className="mt-2 inline-flex items-center gap-2 text-xs bg-amber-50 text-amber-800 border border-amber-200 rounded px-3 py-1.5">
+            <span>⚠</span>
+            <span>
+              当前展示的是 <strong>{latestKey}</strong> 的榜单快照 ·
+              今日（{todayKey}）scraper 尚未产出新数据。
+              请检查 <code className="bg-white px-1 rounded">docker compose logs scraper</code>
+            </span>
+          </div>
+        )}
       </header>
 
       {/* Stat cards */}
@@ -826,7 +886,8 @@ export default async function WechatDashboardPage() {
               key={meta.key}
               title={meta.title}
               subtitle={meta.subtitle}
-              rows={chartData[i]}
+              rows={chartData[i].rows}
+              snapshotDate={chartData[i].snapshotDate}
               viewAllHref={`/charts/${meta.key}`}
             />
           ))}
