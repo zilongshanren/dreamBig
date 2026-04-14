@@ -85,7 +85,7 @@ function windowStartDate(w: Filters["window"]): Date {
 
 async function getStats(workspaceId: string) {
   try {
-    const [gameCount, platformCount, alertCount, topScores] =
+    const [gameCount, platformCount, alertCount, topScores, highPotentialCount] =
       await Promise.all([
         prisma.game.count(),
         prisma.platformListing.count(),
@@ -101,10 +101,28 @@ async function getStats(workspaceId: string) {
           take: 10,
           include: { game: true },
         }),
+        prisma.potentialScore.count({
+          where: {
+            scoredAt: todayDate(),
+            overallScore: { gte: 60 },
+          },
+        }),
       ]);
-    return { gameCount, platformCount, alertCount, topScores };
+    return {
+      gameCount,
+      platformCount,
+      alertCount,
+      topScores,
+      highPotentialCount,
+    };
   } catch {
-    return { gameCount: 0, platformCount: 0, alertCount: 0, topScores: [] };
+    return {
+      gameCount: 0,
+      platformCount: 0,
+      alertCount: 0,
+      topScores: [],
+      highPotentialCount: 0,
+    };
   }
 }
 
@@ -443,12 +461,7 @@ export default async function DashboardPage({
         <StatCard label="总游戏数" value={stats.gameCount} />
         <StatCard label="平台记录" value={stats.platformCount} />
         <StatCard label="今日告警" value={stats.alertCount} />
-        <StatCard
-          label="高潜力 (75+)"
-          value={
-            stats.topScores.filter((s) => s.overallScore >= 75).length
-          }
-        />
+        <StatCard label="高潜力 (60+)" value={stats.highPotentialCount} />
       </div>
 
       {/* 4 Top-10 lists: 2x2 grid */}
@@ -583,7 +596,7 @@ export default async function DashboardPage({
                   <div className="flex items-center gap-2 flex-shrink-0">
                     <span
                       className={`text-xs font-bold px-2 py-0.5 rounded ${
-                        s.overallScore >= 75
+                        s.overallScore >= 60
                           ? "bg-green-100 text-green-800"
                           : "bg-yellow-100 text-yellow-800"
                       }`}

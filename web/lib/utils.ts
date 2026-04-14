@@ -27,15 +27,17 @@ export function getRankChangeIcon(change: number | null): string {
   return "—";
 }
 
+// Aligned with shared/scoring_weights.json thresholds (v2).
+// 60 = high_potential (green), 40 = medium_potential (yellow).
 export function getScoreColor(score: number): string {
-  if (score >= 75) return "text-green-600";
-  if (score >= 50) return "text-yellow-600";
+  if (score >= 60) return "text-green-600";
+  if (score >= 40) return "text-yellow-600";
   return "text-gray-500";
 }
 
 export function getScoreBgColor(score: number): string {
-  if (score >= 75) return "bg-green-100 text-green-800";
-  if (score >= 50) return "bg-yellow-100 text-yellow-800";
+  if (score >= 60) return "bg-green-100 text-green-800";
+  if (score >= 40) return "bg-yellow-100 text-yellow-800";
   return "bg-gray-100 text-gray-600";
 }
 

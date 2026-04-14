@@ -169,7 +169,7 @@ export default async function AlertsPage() {
                       <td className="text-center px-4 py-2">
                         <span
                           className={`font-bold ${
-                            (e.score || 0) >= 75
+                            (e.score || 0) >= 60
                               ? "text-green-600"
                               : "text-yellow-600"
                           }`}

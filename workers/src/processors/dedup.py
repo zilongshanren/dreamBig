@@ -7,12 +7,25 @@ canonical entity, even when names differ across platforms.
 from __future__ import annotations
 
 import logging
+import random
 import re
+import time
 import unicodedata
 
 import psycopg
 
 logger = logging.getLogger(__name__)
+
+# Batch commit frequency: commit every N entries instead of the whole batch.
+# Shorter transactions = shorter lock hold time = fewer deadlocks when two
+# Google Play regions (US + JP) are dequeued at the same minute.
+RANKING_COMMIT_BATCH = 10
+
+# Retry policy for transient concurrency errors (deadlock, unique violation).
+# These can happen when two workers race on the same platform_listings row
+# before either has committed — advisory lock + retry solves it.
+MAX_RETRIES = 3
+INITIAL_BACKOFF_SEC = 0.2
 
 
 def normalize_name(name: str) -> str:
@@ -182,92 +195,161 @@ class DeduplicationEngine:
 
         return row[0]
 
+    def _process_single_entry(
+        self,
+        conn: psycopg.Connection,
+        entry,
+        platform: str,
+        today,
+    ) -> None:
+        """Upsert one ranking entry (game + listing + snapshot).
+
+        Assumes caller holds the transaction and will commit in batches.
+        """
+        game_id = self.find_or_create_game(
+            conn,
+            name=entry.name,
+            developer=entry.developer,
+            genre=entry.genre,
+            platform=platform,
+            platform_id=entry.platform_id,
+        )
+
+        if getattr(entry, "icon_url", None):
+            conn.execute(
+                """
+                UPDATE games SET thumbnail_url = %s
+                WHERE id = %s AND thumbnail_url IS NULL
+                """,
+                (entry.icon_url, game_id),
+            )
+
+        listing_id = self.link_platform_listing(
+            conn,
+            game_id=game_id,
+            platform=platform,
+            platform_id=entry.platform_id,
+            name=entry.name,
+            rating=entry.rating,
+            rating_count=entry.rating_count,
+            download_est=entry.download_est,
+            url=entry.url,
+            metadata=entry.metadata,
+        )
+
+        prev = conn.execute(
+            """
+            SELECT rank_position FROM ranking_snapshots
+            WHERE platform_listing_id = %s
+              AND chart_type = %s
+              AND region = %s
+              AND snapshot_date < %s
+            ORDER BY snapshot_date DESC
+            LIMIT 1
+            """,
+            (listing_id, entry.chart_type, entry.region, today),
+        ).fetchone()
+
+        previous_rank = prev[0] if prev else None
+        rank_change = (
+            (previous_rank - entry.rank_position) if previous_rank else None
+        )
+
+        conn.execute(
+            """
+            INSERT INTO ranking_snapshots
+            (platform_listing_id, chart_type, region,
+             rank_position, previous_rank, rank_change, snapshot_date)
+            VALUES (%s, %s, %s, %s, %s, %s, %s)
+            ON CONFLICT (platform_listing_id, chart_type, region, snapshot_date)
+            DO UPDATE SET
+                rank_position = EXCLUDED.rank_position,
+                previous_rank = EXCLUDED.previous_rank,
+                rank_change = EXCLUDED.rank_change
+            """,
+            (
+                listing_id, entry.chart_type, entry.region,
+                entry.rank_position, previous_rank, rank_change, today,
+            ),
+        )
+
     def process_ranking_entries(
         self,
         conn: psycopg.Connection,
         entries: list,
         platform: str,
     ) -> int:
-        """Process a batch of ranking entries: dedup, link, and store snapshots."""
+        """Process a batch of ranking entries: dedup, link, and store snapshots.
+
+        Concurrency-safe design:
+        1. Entries are sorted by platform_id so concurrent workers acquire
+           row locks in the same order, eliminating a class of deadlocks.
+        2. A transaction-level advisory lock keyed on the platform serializes
+           writes from multiple workers on the same platform — small cost,
+           huge reliability win.
+        3. Each entry is committed in a small batch (RANKING_COMMIT_BATCH)
+           rather than holding one giant transaction for 100 rows. Shorter
+           tx = shorter lock window.
+        4. Each per-entry upsert is retried with backoff on DeadlockDetected
+           or UniqueViolation — these are transient and the operations are
+           idempotent.
+        """
         from datetime import date
 
-        count = 0
         today = date.today()
+        # Sort for consistent lock-acquisition order across concurrent workers.
+        sorted_entries = sorted(entries, key=lambda e: e.platform_id)
+        count = 0
+        pending = 0
 
-        for entry in entries:
-            # Find or create canonical game
-            game_id = self.find_or_create_game(
-                conn,
-                name=entry.name,
-                developer=entry.developer,
-                genre=entry.genre,
-                platform=platform,
-                platform_id=entry.platform_id,
-            )
+        # Transaction-level advisory lock — auto-released on commit/rollback.
+        # Keyed by platform hash so different platforms don't block each other.
+        lock_key = hash(f"ranking:{platform}") & 0x7FFFFFFF
+        conn.execute("SELECT pg_advisory_xact_lock(%s)", (lock_key,))
 
-            # Store icon as thumbnail if the game doesn't have one yet
-            if getattr(entry, "icon_url", None):
-                conn.execute(
-                    """
-                    UPDATE games SET thumbnail_url = %s
-                    WHERE id = %s AND thumbnail_url IS NULL
-                    """,
-                    (entry.icon_url, game_id),
-                )
-
-            # Link platform listing
-            listing_id = self.link_platform_listing(
-                conn,
-                game_id=game_id,
-                platform=platform,
-                platform_id=entry.platform_id,
-                name=entry.name,
-                rating=entry.rating,
-                rating_count=entry.rating_count,
-                download_est=entry.download_est,
-                url=entry.url,
-                metadata=entry.metadata,
-            )
-
-            # Get previous rank for change calculation
-            prev = conn.execute(
-                """
-                SELECT rank_position FROM ranking_snapshots
-                WHERE platform_listing_id = %s
-                  AND chart_type = %s
-                  AND region = %s
-                  AND snapshot_date < %s
-                ORDER BY snapshot_date DESC
-                LIMIT 1
-                """,
-                (listing_id, entry.chart_type, entry.region, today),
-            ).fetchone()
-
-            previous_rank = prev[0] if prev else None
-            rank_change = (
-                (previous_rank - entry.rank_position) if previous_rank else None
-            )
-
-            # Insert ranking snapshot
-            conn.execute(
-                """
-                INSERT INTO ranking_snapshots
-                (platform_listing_id, chart_type, region,
-                 rank_position, previous_rank, rank_change, snapshot_date)
-                VALUES (%s, %s, %s, %s, %s, %s, %s)
-                ON CONFLICT (platform_listing_id, chart_type, region, snapshot_date)
-                DO UPDATE SET
-                    rank_position = EXCLUDED.rank_position,
-                    previous_rank = EXCLUDED.previous_rank,
-                    rank_change = EXCLUDED.rank_change
-                """,
-                (
-                    listing_id, entry.chart_type, entry.region,
-                    entry.rank_position, previous_rank, rank_change, today,
-                ),
-            )
+        for entry in sorted_entries:
+            for attempt in range(MAX_RETRIES):
+                try:
+                    self._process_single_entry(conn, entry, platform, today)
+                    break
+                except (
+                    psycopg.errors.DeadlockDetected,
+                    psycopg.errors.UniqueViolation,
+                    psycopg.errors.SerializationFailure,
+                ) as e:
+                    conn.rollback()
+                    # Re-acquire advisory lock after rollback.
+                    conn.execute(
+                        "SELECT pg_advisory_xact_lock(%s)", (lock_key,)
+                    )
+                    if attempt == MAX_RETRIES - 1:
+                        logger.error(
+                            f"[{platform}] giving up on entry "
+                            f"{entry.platform_id} after {MAX_RETRIES} retries: {e}"
+                        )
+                        # Skip this one entry, keep processing the rest.
+                        break
+                    backoff = INITIAL_BACKOFF_SEC * (2 ** attempt) + random.random() * 0.1
+                    logger.warning(
+                        f"[{platform}] retry {attempt + 1}/{MAX_RETRIES} on "
+                        f"{entry.platform_id} after {e.__class__.__name__}; "
+                        f"sleeping {backoff:.2f}s"
+                    )
+                    time.sleep(backoff)
+            else:
+                continue
 
             count += 1
+            pending += 1
+            if pending >= RANKING_COMMIT_BATCH:
+                conn.commit()
+                pending = 0
+                # Re-acquire advisory lock for the next batch's transaction.
+                conn.execute(
+                    "SELECT pg_advisory_xact_lock(%s)", (lock_key,)
+                )
 
-        conn.commit()
+        if pending > 0:
+            conn.commit()
+
         return count

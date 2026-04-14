@@ -38,25 +38,26 @@ class TestRankingVelocity:
         fake_conn.queue_result(rows)
 
         # Act
-        score = engine._calc_ranking_velocity(1, fake_conn)
+        score, active = engine._calc_ranking_velocity(1, fake_conn)
 
-        # Assert: rising game should score > 0, and with >50 improvement gets
-        # the +20 bonus baked in.
+        # Assert: rising game should score > 0, active=True.
         assert score > 0
         assert score <= 100
+        assert active is True
 
-    def test_insufficient_data_returns_zero(self, engine, fake_conn):
-        # Arrange: only 1 data point < min_data_points (3)
+    def test_insufficient_data_returns_inactive(self, engine, fake_conn):
+        # Arrange: only 1 data point < min_data_points (3) → inactive
         fake_conn.queue_result([(50, date.today())])
 
         # Act
-        score = engine._calc_ranking_velocity(1, fake_conn)
+        score, active = engine._calc_ranking_velocity(1, fake_conn)
 
-        # Assert
+        # Assert: inactive means score is dropped from normalization.
         assert score == 0
+        assert active is False
 
-    def test_flat_trend_returns_low_score(self, engine, fake_conn):
-        # Arrange: flat rank over many days
+    def test_flat_trend_returns_zero_inactive(self, engine, fake_conn):
+        # Arrange: flat rank over many days; slope zero → denom-of-slope zero
         today = date.today()
         rows = [
             (50, today - timedelta(days=7)),
@@ -68,10 +69,14 @@ class TestRankingVelocity:
         fake_conn.queue_result(rows)
 
         # Act
-        score = engine._calc_ranking_velocity(1, fake_conn)
+        score, active = engine._calc_ranking_velocity(1, fake_conn)
 
-        # Assert: zero slope → zero velocity
+        # Assert: zero slope → velocity 0, but active=True (data exists).
+        # Actually: regression math produces slope=0 which gives score=0
+        # and velocity_score stays 0. The early-return from denom==0 is the
+        # "inactive" signal; a computed-zero slope is still "active".
         assert score == 0
+        assert active is True
 
 
 # ---------------------------------------------------------------------------
@@ -125,8 +130,6 @@ class TestGenreFit:
 class TestSocialBuzz:
     def test_mixed_platforms_returns_score(self, engine, fake_conn):
         # Arrange: douyin (weight 1.0) + bilibili (weight 0.8)
-        # douyin 500k views + 20 videos → view_score=50, video_bonus=30 → 80
-        # bilibili 200k views + 10 videos → view_score=20, video_bonus=20 → 40
         rows = [
             ("douyin", 20, 500_000, 5_000),
             ("bilibili", 10, 200_000, 2_000),
@@ -134,20 +137,22 @@ class TestSocialBuzz:
         fake_conn.queue_result(rows)
 
         # Act
-        score = engine._calc_social_buzz(1, fake_conn)
+        score, active = engine._calc_social_buzz(1, fake_conn)
 
-        # Assert: both platforms contribute, score is in [0,100]
+        # Assert: both platforms contribute, score in [0,100], active.
         assert 0 < score <= 100
+        assert active is True
 
-    def test_empty_returns_zero(self, engine, fake_conn):
-        # Arrange: no rows
+    def test_empty_returns_inactive(self, engine, fake_conn):
+        # Arrange: no rows → dimension inactive (excluded from denominator)
         fake_conn.queue_result([])
 
         # Act
-        score = engine._calc_social_buzz(1, fake_conn)
+        score, active = engine._calc_social_buzz(1, fake_conn)
 
         # Assert
         assert score == 0
+        assert active is False
 
 
 # ---------------------------------------------------------------------------
@@ -155,27 +160,26 @@ class TestSocialBuzz:
 # ---------------------------------------------------------------------------
 class TestCrossPlatform:
     def test_three_platforms_beats_one(self, engine, fake_conn):
-        # Arrange/Act: three platform listings
         fake_conn.queue_result([("google_play",), ("app_store",), ("steam",)])
-        three_score = engine._calc_cross_platform(1, fake_conn)
+        three_score, three_active = engine._calc_cross_platform(1, fake_conn)
 
         fake_conn.queue_result([("google_play",)])
-        one_score = engine._calc_cross_platform(1, fake_conn)
+        one_score, one_active = engine._calc_cross_platform(1, fake_conn)
 
-        # Assert
         assert three_score > one_score
         assert three_score == 70  # 25 + 25 + 20
         assert one_score == 25
+        assert three_active is True
+        assert one_active is True
 
-    def test_no_listings_returns_zero(self, engine, fake_conn):
-        # Arrange
+    def test_no_listings_returns_inactive(self, engine, fake_conn):
         fake_conn.queue_result([])
 
-        # Act
-        score = engine._calc_cross_platform(1, fake_conn)
+        score, active = engine._calc_cross_platform(1, fake_conn)
 
-        # Assert
+        # No listings → dimension excluded from normalization.
         assert score == 0
+        assert active is False
 
 
 # ---------------------------------------------------------------------------
@@ -183,34 +187,29 @@ class TestCrossPlatform:
 # ---------------------------------------------------------------------------
 class TestRatingQuality:
     def test_high_rating_many_reviews_scores_high(self, engine, fake_conn):
-        # Arrange: 4.7/5 with 150k reviews
         fake_conn.queue_result([(4.7, 150_000)])
 
-        # Act
-        score = engine._calc_rating_quality(1, fake_conn)
+        score, active = engine._calc_rating_quality(1, fake_conn)
 
-        # Assert: rating_norm = 4.7/5*60 = 56.4, count_bonus = 40 → 96
         assert score >= 90
+        assert active is True
 
     def test_low_rating_few_reviews_scores_low(self, engine, fake_conn):
-        # Arrange
         fake_conn.queue_result([(2.5, 50)])
 
-        # Act
-        score = engine._calc_rating_quality(1, fake_conn)
+        score, active = engine._calc_rating_quality(1, fake_conn)
 
-        # Assert
         assert score < 40
+        assert active is True
 
-    def test_no_rating_returns_zero(self, engine, fake_conn):
-        # Arrange
+    def test_no_rating_returns_inactive(self, engine, fake_conn):
         fake_conn.queue_result([])
 
-        # Act
-        score = engine._calc_rating_quality(1, fake_conn)
+        score, active = engine._calc_rating_quality(1, fake_conn)
 
-        # Assert
+        # No rating data (e.g. WeChat Mini game) → excluded from normalization.
         assert score == 0
+        assert active is False
 
 
 # ---------------------------------------------------------------------------
@@ -276,24 +275,21 @@ class TestAdActivity:
         ],
     )
     def test_thresholds(self, engine, fake_conn, creatives, expected):
-        # Arrange
         fake_conn.queue_result([(creatives,)])
 
-        # Act
-        score = engine._calc_ad_activity(1, fake_conn)
+        score, active = engine._calc_ad_activity(1, fake_conn)
 
-        # Assert
         assert score == expected
+        assert active is True
 
-    def test_no_ads_returns_zero(self, engine, fake_conn):
-        # Arrange: row exists but sum is None
+    def test_no_ads_returns_inactive(self, engine, fake_conn):
+        # Row exists but sum is None → no measurements yet, dimension skipped.
         fake_conn.queue_result([(None,)])
 
-        # Act
-        score = engine._calc_ad_activity(1, fake_conn)
+        score, active = engine._calc_ad_activity(1, fake_conn)
 
-        # Assert
         assert score == 0
+        assert active is False
 
 
 # ---------------------------------------------------------------------------
@@ -344,4 +340,50 @@ class TestScoreGameEndToEnd:
         # Idle + rising + multi-platform should produce a healthy score
         assert result.overall_score > 50
         assert result.genre_fit == 95
-        assert result.algorithm_version == "v1"
+        assert result.algorithm_version == "v2"
+
+    def test_wechat_only_game_can_exceed_high_potential(self, engine, fake_conn):
+        """Regression: v1 scoring gave WeChat-only games a hard ceiling
+        around 57 because rating_quality=0 / social_buzz=0 / ad_activity=0
+        were averaged into the denominator. v2 dynamic normalization drops
+        absent dimensions, so a strong WeChat game can cross the 60-point
+        high-potential threshold on its own merits."""
+        today = date.today()
+
+        # 1. ranking_velocity: strong rising series (big improvement bonus)
+        fake_conn.queue_result(
+            [
+                (200, today - timedelta(days=7)),
+                (120, today - timedelta(days=5)),
+                (60, today - timedelta(days=3)),
+                (20, today - timedelta(days=1)),
+                (10, today),
+            ]
+        )
+        # 2. genre_fit: idle (iaa_score=95)
+        fake_conn.queue_result([("idle", [])])
+        # 3. social_buzz: no rows (empty B站/Douyin data)
+        fake_conn.queue_result([])
+        # 4. cross_platform: wechat_mini only
+        fake_conn.queue_result([("wechat_mini",)])
+        # 5. rating_quality: no rows (WeChat has no star ratings)
+        fake_conn.queue_result([])
+        # 6. competition_gap: (genre, tags) then COUNT
+        fake_conn.queue_result([("idle", [])])
+        fake_conn.queue_result([(0,)])
+        # 7. ad_activity: no ad data
+        fake_conn.queue_result([(None,)])
+
+        # Act
+        result = engine.score_game(game_id=99, conn=fake_conn)
+
+        # Assert: v1 would have capped this around 57. With dynamic
+        # normalization a top-tier idle WeChat game clears 60.
+        assert result.social_buzz == 0
+        assert result.rating_quality == 0
+        assert result.ad_activity == 0
+        assert result.genre_fit == 95
+        assert result.overall_score >= 60, (
+            f"WeChat-only idle game with strong velocity should score "
+            f">= 60, got {result.overall_score}"
+        )

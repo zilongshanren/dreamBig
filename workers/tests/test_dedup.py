@@ -136,6 +136,8 @@ class TestProcessRankingEntries:
     def test_mixed_new_and_existing_entries(self, engine, fake_conn):
         # Arrange: two entries — the first is an existing game (tier 1 hit),
         # the second is brand new (misses all tiers → INSERT).
+        # NOTE: entries are sorted by platform_id before processing, so
+        # "com.ex.game" still comes before "com.fresh.indie" alphabetically.
         entries = [
             FakeEntry(
                 name="Existing Game",
@@ -152,6 +154,11 @@ class TestProcessRankingEntries:
                 rank_position=42,
             ),
         ]
+
+        # New in v2: process_ranking_entries acquires a transaction-level
+        # advisory lock before touching rows. That's a `SELECT pg_advisory_
+        # xact_lock(...)` which drains one slot from the fake queue.
+        fake_conn.queue_result([])          # advisory lock — no meaningful rows
 
         # ---------------- entry 1 (existing) ----------------
         fake_conn.queue_result([(100,)])    # find_or_create tier 1 hit → id=100
@@ -172,9 +179,15 @@ class TestProcessRankingEntries:
 
         # Assert
         assert count == 2
+        # With only 2 entries (< RANKING_COMMIT_BATCH=10) there is exactly
+        # one final commit at the end of the loop.
         assert fake_conn.committed == 1
         # Sanity check: a ranking snapshot INSERT was issued for each entry
         snapshot_inserts = [
             sql for sql, _ in fake_conn.executed if "ranking_snapshots" in sql and "INSERT" in sql
         ]
         assert len(snapshot_inserts) == 2
+        # The advisory lock was acquired at the top of the transaction.
+        assert any(
+            "pg_advisory_xact_lock" in sql for sql, _ in fake_conn.executed
+        )

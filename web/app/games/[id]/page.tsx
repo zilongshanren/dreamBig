@@ -299,9 +299,9 @@ export default async function GameDetailPage({
           <div className="text-center">
             <div
               className={`text-4xl font-bold ${
-                score.overallScore >= 75
+                score.overallScore >= 60
                   ? "text-green-600"
-                  : score.overallScore >= 50
+                  : score.overallScore >= 40
                     ? "text-yellow-600"
                     : "text-gray-500"
               }`}

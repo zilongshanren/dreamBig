@@ -203,9 +203,9 @@ export default async function GenreDetailPage({
                       <div className="shrink-0">
                         <span
                           className={`text-xs font-mono font-bold px-2 py-1 rounded ${
-                            score >= 75
+                            score >= 60
                               ? "bg-green-100 text-green-700"
-                              : score >= 50
+                              : score >= 40
                                 ? "bg-yellow-100 text-yellow-700"
                                 : "bg-gray-100 text-gray-500"
                           }`}

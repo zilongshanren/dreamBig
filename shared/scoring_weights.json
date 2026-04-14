@@ -1,5 +1,5 @@
 {
-  "version": "v1",
+  "version": "v2",
   "weights": {
     "ranking_velocity": 0.25,
     "genre_fit": 0.20,
@@ -10,9 +10,9 @@
     "ad_activity": 0.05
   },
   "thresholds": {
-    "high_potential": 75,
-    "medium_potential": 50,
-    "low_potential": 25
+    "high_potential": 60,
+    "medium_potential": 40,
+    "low_potential": 20
   },
   "ranking_velocity_params": {
     "window_days": 14,

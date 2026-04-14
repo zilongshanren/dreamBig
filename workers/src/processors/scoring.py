@@ -58,24 +58,54 @@ class ScoringEngine:
         self.weights = self.config["weights"]
 
     def score_game(self, game_id: int, conn: psycopg.Connection) -> ScoreBreakdown:
-        """Compute the full score for a single game."""
-        rv = self._calc_ranking_velocity(game_id, conn)
-        gf = self._calc_genre_fit(game_id, conn)
-        sb = self._calc_social_buzz(game_id, conn)
-        cp = self._calc_cross_platform(game_id, conn)
-        rq = self._calc_rating_quality(game_id, conn)
-        cg = self._calc_competition_gap(game_id, conn)
-        aa = self._calc_ad_activity(game_id, conn)
+        """Compute the full score for a single game.
 
-        overall = int(
-            rv * self.weights["ranking_velocity"]
-            + gf * self.weights["genre_fit"]
-            + sb * self.weights["social_buzz"]
-            + cp * self.weights["cross_platform"]
-            + rq * self.weights["rating_quality"]
-            + cg * self.weights["competition_gap"]
-            + aa * self.weights["ad_activity"]
+        Dynamic normalization: dimensions with no underlying data (e.g. a
+        WeChat-only game has no review data → rating_quality=0) are dropped
+        from both numerator and denominator rather than being treated as a
+        hard 0. This prevents mathematical ceilings like "a pure WeChat
+        game can never exceed 57" just because half the data sources are
+        platform-incompatible.
+
+        A dimension is considered "active" iff the underlying data source
+        yielded something — the per-calculator helpers return a (score,
+        has_data) tuple. Genre-fit and competition-gap always count because
+        they fall back to a genre table rather than raw per-game data.
+        """
+        # Keep the SELECT order identical to the v1 implementation so the
+        # test fixtures that queue fake rows by ordinal position still line
+        # up: ranking_velocity → genre_fit → social_buzz → cross_platform
+        # → rating_quality → competition_gap → ad_activity.
+        rv, rv_active = self._calc_ranking_velocity(game_id, conn)
+        gf = self._calc_genre_fit(game_id, conn)
+        sb, sb_active = self._calc_social_buzz(game_id, conn)
+        cp, cp_active = self._calc_cross_platform(game_id, conn)
+        rq, rq_active = self._calc_rating_quality(game_id, conn)
+        cg = self._calc_competition_gap(game_id, conn)
+        aa, aa_active = self._calc_ad_activity(game_id, conn)
+
+        dims = [
+            ("ranking_velocity", rv, rv_active),
+            ("genre_fit", gf, True),
+            ("social_buzz", sb, sb_active),
+            ("cross_platform", cp, cp_active),
+            ("rating_quality", rq, rq_active),
+            ("competition_gap", cg, True),
+            ("ad_activity", aa, aa_active),
+        ]
+
+        active_weight_sum = sum(
+            self.weights[name] for name, _, active in dims if active
         )
+        weighted_sum = sum(
+            score * self.weights[name] for name, score, active in dims if active
+        )
+
+        if active_weight_sum <= 0:
+            overall = 0
+        else:
+            # Normalize by the weight of dimensions that actually contributed.
+            overall = int(round(weighted_sum / active_weight_sum))
 
         return ScoreBreakdown(
             game_id=game_id,
@@ -90,11 +120,15 @@ class ScoringEngine:
             algorithm_version=self.config["version"],
         )
 
-    def _calc_ranking_velocity(self, game_id: int, conn: psycopg.Connection) -> int:
+    def _calc_ranking_velocity(
+        self, game_id: int, conn: psycopg.Connection
+    ) -> tuple[int, bool]:
         """Calculate ranking velocity score (0-100).
 
-        Measures how fast a game is climbing charts over a 14-day window.
-        A game rising from #200 to #50 in 7 days gets a very high score.
+        Returns (score, has_data). has_data=False means this game doesn't
+        yet have enough ranking snapshots to measure velocity — it will be
+        dropped from normalization rather than pulling the overall score
+        down to 0.
         """
         window_days = self.config["ranking_velocity_params"]["window_days"]
         min_points = self.config["ranking_velocity_params"]["min_data_points"]
@@ -112,17 +146,14 @@ class ScoringEngine:
         ).fetchall()
 
         if len(rows) < min_points:
-            return 0
+            return 0, False
 
-        # Linear regression on rank positions over time
-        # Lower rank = better, so negative slope = game is rising
         positions = [r[0] for r in rows]
         days = [(r[1] - cutoff).days for r in rows]
 
         if len(set(days)) < 2:
-            return 0
+            return 0, False
 
-        # Simple linear regression
         n = len(positions)
         sum_x = sum(days)
         sum_y = sum(positions)
@@ -131,22 +162,19 @@ class ScoringEngine:
 
         denom = n * sum_x2 - sum_x * sum_x
         if denom == 0:
-            return 0
+            return 0, False
 
         slope = (n * sum_xy - sum_x * sum_y) / denom
 
-        # Negative slope = rising (rank number decreasing)
-        # Normalize: slope of -10/day (rising ~10 positions daily) = 100
         velocity_score = int(min(100, max(0, -slope * 10)))
 
-        # Bonus for large rank improvements
         first_rank = positions[0]
         last_rank = positions[-1]
         improvement = first_rank - last_rank
         if improvement > 50:
             velocity_score = min(100, velocity_score + 20)
 
-        return velocity_score
+        return velocity_score, True
 
     def _calc_genre_fit(self, game_id: int, conn: psycopg.Connection) -> int:
         """Calculate genre IAA fit score (0-100).
@@ -185,10 +213,15 @@ class ScoringEngine:
 
         return best_score
 
-    def _calc_social_buzz(self, game_id: int, conn: psycopg.Connection) -> int:
+    def _calc_social_buzz(
+        self, game_id: int, conn: psycopg.Connection
+    ) -> tuple[int, bool]:
         """Calculate social media buzz score (0-100).
 
-        Based on video counts and view velocity across platforms.
+        Returns (score, has_data). No social signals at all → has_data=False
+        so the dimension is excluded from normalization. Having signals with
+        zero views is still "has data" — it's a real signal that creators
+        haven't picked up the game yet.
         """
         recent = date.today() - timedelta(days=7)
 
@@ -203,7 +236,7 @@ class ScoringEngine:
         ).fetchall()
 
         if not rows:
-            return 0
+            return 0, False
 
         platform_weights = self.config["social_buzz_params"]["platform_weights"]
         total_score = 0.0
@@ -213,28 +246,29 @@ class ScoringEngine:
             weight = float(platform_weights.get(platform, 0.5))
             max_possible += weight * 100
 
-            # SUM() on BIGINT returns numeric → Decimal in psycopg3.
-            # Cast to int up front so all downstream arithmetic is native.
             vc = int(view_count or 0)
             vid = int(video_count or 0)
 
-            # Normalize views: 100K views = 50 score, 1M+ = 100
             view_score = min(100.0, vc / 10000.0)
-            # Video count bonus: more creators = more organic
             video_bonus = min(30, vid * 2)
 
             platform_score = min(100.0, view_score + video_bonus)
             total_score += platform_score * weight
 
         if max_possible == 0:
-            return 0
+            return 0, False
 
-        return int(total_score / max_possible * 100)
+        return int(total_score / max_possible * 100), True
 
-    def _calc_cross_platform(self, game_id: int, conn: psycopg.Connection) -> int:
+    def _calc_cross_platform(
+        self, game_id: int, conn: psycopg.Connection
+    ) -> tuple[int, bool]:
         """Calculate cross-platform presence score (0-100).
 
-        Games on more platforms demonstrate universal appeal.
+        Returns (score, has_data). A game with zero listings → (0, False);
+        with any listing → (score, True) so single-platform games can still
+        score the full 100 on other dimensions and exceed the high-potential
+        threshold on their own merit.
         """
         rows = conn.execute(
             "SELECT platform FROM platform_listings WHERE game_id = %s",
@@ -243,7 +277,9 @@ class ScoringEngine:
 
         platforms = {r[0] for r in rows}
 
-        # Weighted platform points
+        if not platforms:
+            return 0, False
+
         platform_points = {
             "google_play": 25,
             "app_store": 25,
@@ -255,12 +291,16 @@ class ScoringEngine:
         }
 
         score = sum(platform_points.get(p, 5) for p in platforms)
-        return min(100, score)
+        return min(100, score), True
 
-    def _calc_rating_quality(self, game_id: int, conn: psycopg.Connection) -> int:
+    def _calc_rating_quality(
+        self, game_id: int, conn: psycopg.Connection
+    ) -> tuple[int, bool]:
         """Calculate rating quality score (0-100).
 
-        High rating + many reviews = quality worth porting.
+        Returns (score, has_data). WeChat Mini games, 4399 and many other
+        platforms don't expose star ratings; for those games rating_quality
+        is simply inapplicable, not zero — reflect that with has_data=False.
         """
         rows = conn.execute(
             """
@@ -272,24 +312,18 @@ class ScoringEngine:
         ).fetchall()
 
         if not rows:
-            return 0
+            return 0, False
 
-        # Use the best rating with sufficient reviews
         best_score = 0
         for rating, count in rows:
             if rating is None:
                 continue
 
-            # rating column is DECIMAL — convert to float up front so every
-            # downstream operation is native python and never mixes Decimal
-            # with float weights / divisors.
             rating_f = float(rating)
             count = int(count or 0)
 
-            # Normalize rating to 0-60 (rating out of 5)
             rating_norm = min(60.0, (rating_f / 5.0) * 60.0)
 
-            # Review count bonus: 1K = +10, 10K = +25, 100K+ = +40
             if count >= 100000:
                 count_bonus = 40.0
             elif count >= 10000:
@@ -302,7 +336,7 @@ class ScoringEngine:
             total = int(rating_norm + count_bonus)
             best_score = max(best_score, total)
 
-        return min(100, best_score)
+        return min(100, best_score), True
 
     def _calc_competition_gap(self, game_id: int, conn: psycopg.Connection) -> int:
         """Calculate competition gap score (0-100).
@@ -341,37 +375,39 @@ class ScoringEngine:
         else:
             return 20
 
-    def _calc_ad_activity(self, game_id: int, conn: psycopg.Connection) -> int:
+    def _calc_ad_activity(
+        self, game_id: int, conn: psycopg.Connection
+    ) -> tuple[int, bool]:
         """Calculate ad activity score (0-100).
 
-        Others advertising similar games = validated market demand.
+        Returns (score, has_data). No ad-intelligence rows means we haven't
+        measured this game yet — don't penalize it.
         """
         recent = date.today() - timedelta(days=14)
 
-        rows = conn.execute(
+        row = conn.execute(
             """
             SELECT SUM(active_creatives)
             FROM ad_intelligence
             WHERE game_id = %s AND signal_date >= %s
             """,
             (game_id, recent),
-        ).fetchall()
+        ).fetchone()
 
-        if not rows or not rows[0][0]:
-            return 0
+        if not row or row[0] is None:
+            return 0, False
 
-        creatives = rows[0][0] or 0
-        # More creatives = more validated
+        creatives = int(row[0] or 0)
         if creatives >= 100:
-            return 100
+            return 100, True
         elif creatives >= 50:
-            return 80
+            return 80, True
         elif creatives >= 20:
-            return 60
+            return 60, True
         elif creatives >= 5:
-            return 40
+            return 40, True
         else:
-            return 20
+            return 20, True
 
     def score_all_games(self) -> list[ScoreBreakdown]:
         """Score all games in the database."""

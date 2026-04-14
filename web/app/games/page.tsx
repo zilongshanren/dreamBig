@@ -279,9 +279,9 @@ export default async function GamesPage({
                       {score ? (
                         <span
                           className={`font-bold ${
-                            score.overallScore >= 75
+                            score.overallScore >= 60
                               ? "text-green-600"
-                              : score.overallScore >= 50
+                              : score.overallScore >= 40
                                 ? "text-yellow-600"
                                 : "text-gray-500"
                           }`}

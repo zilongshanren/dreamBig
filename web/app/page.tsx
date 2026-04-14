@@ -957,7 +957,7 @@ export default async function WechatDashboardPage() {
                       <td className="text-right px-2 py-2">
                         <span
                           className={`text-xs font-bold ${
-                            g.overall_score >= 75
+                            g.overall_score >= 60
                               ? "text-green-600"
                               : "text-gray-600"
                           }`}

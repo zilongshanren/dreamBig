@@ -324,9 +324,9 @@ export default async function IaaListPage({
                     <p className="text-gray-500">潜力评分</p>
                     <p
                       className={`font-mono font-bold ${
-                        overall >= 75
+                        overall >= 60
                           ? "text-green-600"
-                          : overall >= 50
+                          : overall >= 40
                             ? "text-yellow-600"
                             : "text-gray-500"
                       }`}

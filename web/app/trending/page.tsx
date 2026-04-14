@@ -159,9 +159,9 @@ export default async function TrendingPage() {
                     <td className="text-center px-3 py-2">
                       <span
                         className={`font-bold ${
-                          t.overallScore >= 75
+                          t.overallScore >= 60
                             ? "text-green-600"
-                            : t.overallScore >= 50
+                            : t.overallScore >= 40
                               ? "text-yellow-600"
                               : "text-gray-500"
                         }`}

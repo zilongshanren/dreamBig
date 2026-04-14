@@ -408,7 +408,7 @@ export default async function ChartViewAllPage({
                       <td className="text-right px-3 py-2.5">
                         <span
                           className={`font-bold ${
-                            (r.overall_score ?? 0) >= 75
+                            (r.overall_score ?? 0) >= 60
                               ? "text-green-600"
                               : "text-gray-700"
                           }`}
