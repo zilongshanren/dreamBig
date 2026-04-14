@@ -22,6 +22,7 @@ Design philosophy (mirroring the wechat_intelligence v2 rewrite):
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import logging
 from datetime import datetime, timedelta, timezone
@@ -48,8 +49,9 @@ logger = logging.getLogger(__name__)
 PROMPT_VERSION = GAMEPLAY_INTEL_PROMPT.version  # "v1"
 DEFAULT_CONCURRENCY = 4
 WEB_CACHE_TTL = timedelta(days=7)
-WEB_SOURCES_PER_GAME = 8
-WEB_BODY_MAX_CHARS = 800
+WEB_SOURCES_PER_GAME = 3
+WEB_BODY_MAX_CHARS = 500
+INTEL_REFRESH_TTL_DAYS = 7
 
 
 # ============================================================
@@ -60,33 +62,70 @@ WEB_BODY_MAX_CHARS = 800
 def _select_target_games(
     conn: psycopg.Connection, limit: int, target_date: date | None
 ) -> list[int]:
-    """Pick the top WeChat mini games to analyze today.
+    """Pick the WeChat mini games that need a gameplay_intel refresh today.
 
-    Priority: games in today's cross-chart top-100 ordered by number of
-    charts they appear on (descending). Falls back to games with a
-    non-empty ``metadata->>'description'`` if ranking is empty.
+    Eligibility — must be in today's cross-chart top-100 AND satisfy ONE of:
+      * Has no ``metadata.gameplay_intel`` block yet (new game), OR
+      * Existing intel is older than ``INTEL_REFRESH_TTL_DAYS``, OR
+      * Game's best rank improved by ≥10 vs. its prior best (rank delta proxy
+        for "something changed and the intel may be stale").
+
+    Falls back to the legacy "has description" set if the ranking table is
+    empty (e.g. fresh DB for tests).
     """
     today = target_date or date.today()
     rows = conn.execute(
         """
-        SELECT g.id
-        FROM ranking_snapshots rs
-        JOIN platform_listings pl ON rs.platform_listing_id = pl.id
-        JOIN games g ON pl.game_id = g.id
-        WHERE pl.platform = 'wechat_mini'
-          AND rs.snapshot_date = %s
-          AND rs.rank_position <= 100
-        GROUP BY g.id
-        ORDER BY COUNT(DISTINCT rs.chart_type) DESC,
-                 MIN(rs.rank_position) ASC
+        WITH today_top AS (
+            SELECT g.id AS game_id,
+                   COUNT(DISTINCT rs.chart_type) AS chart_count,
+                   MIN(rs.rank_position)         AS best_rank
+            FROM ranking_snapshots rs
+            JOIN platform_listings pl ON rs.platform_listing_id = pl.id
+            JOIN games g ON pl.game_id = g.id
+            WHERE pl.platform = 'wechat_mini'
+              AND rs.snapshot_date = %s
+              AND rs.rank_position <= 100
+            GROUP BY g.id
+        ),
+        prior_top AS (
+            SELECT g.id AS game_id,
+                   MIN(rs.rank_position) AS best_rank_prior
+            FROM ranking_snapshots rs
+            JOIN platform_listings pl ON rs.platform_listing_id = pl.id
+            JOIN games g ON pl.game_id = g.id
+            WHERE pl.platform = 'wechat_mini'
+              AND rs.snapshot_date BETWEEN %s - INTERVAL '7 days' AND %s - INTERVAL '1 day'
+            GROUP BY g.id
+        )
+        SELECT t.game_id
+        FROM today_top t
+        JOIN games g ON g.id = t.game_id
+        LEFT JOIN prior_top p ON p.game_id = t.game_id
+        WHERE
+            -- (a) no intel yet
+            (g.metadata->'gameplay_intel' IS NULL)
+            -- (b) intel is stale
+            OR (
+                g.metadata->'gameplay_intel'->>'generated_at' IS NULL
+                OR (g.metadata->'gameplay_intel'->>'generated_at')::timestamptz
+                   < NOW() - (%s::INT * INTERVAL '1 day')
+            )
+            -- (c) significant rank improvement vs prior 7-day best
+            OR (
+                p.best_rank_prior IS NOT NULL
+                AND (p.best_rank_prior - t.best_rank) >= 10
+            )
+        ORDER BY t.chart_count DESC, t.best_rank ASC
         LIMIT %s
         """,
-        (today, limit),
+        (today, today, today, INTEL_REFRESH_TTL_DAYS, limit),
     ).fetchall()
     if rows:
         return [int(r[0]) for r in rows]
 
-    # Fallback: any WeChat game that already has some description text.
+    # Fallback: any WeChat game that already has some description text but
+    # no intel yet — keeps the test suite + fresh installs working.
     fallback = conn.execute(
         """
         SELECT g.id
@@ -94,6 +133,7 @@ def _select_target_games(
         JOIN platform_listings pl ON pl.game_id = g.id
         WHERE pl.platform = 'wechat_mini'
           AND COALESCE(NULLIF(g.metadata->>'description', ''), '') <> ''
+          AND (g.metadata->'gameplay_intel' IS NULL)
         ORDER BY g.updated_at DESC
         LIMIT %s
         """,
@@ -417,6 +457,69 @@ def _estimate_evidence_sources(sources: dict[str, Any]) -> int:
     return n
 
 
+def _content_hash(sources: dict[str, Any]) -> str:
+    """Stable hash of all input signals — used to skip re-running when nothing
+    actually changed since the previous run.
+
+    We hash structured projections of each block (not the raw dicts), so
+    cosmetic fields like fetched_at don't bust the cache.
+    """
+    digest = hashlib.sha256()
+    digest.update(GAMEPLAY_INTEL_PROMPT.version.encode("utf-8"))
+    digest.update(b"|")
+
+    parts: list[str] = [
+        sources.get("name") or "",
+        sources.get("genre") or "",
+        sources.get("editor_intro") or "",
+        # Screenshot URLs (order-stable, content-only)
+        json.dumps(sources.get("screenshots") or [], ensure_ascii=False),
+        # Review topics — only the (sentiment, topic, count) tuples matter
+        json.dumps(
+            sorted(
+                (r.get("sentiment"), r.get("topic"), r.get("count"))
+                for r in sources.get("review_topics") or []
+            ),
+            ensure_ascii=False,
+        ),
+        # Hook phrases — phrase + platform + view bucket
+        json.dumps(
+            sorted(
+                (r.get("hook"), r.get("platform"), int((r.get("views") or 0) // 1000))
+                for r in sources.get("hooks") or []
+            ),
+            ensure_ascii=False,
+        ),
+        # Web sources — URL + first 200 chars of body (avoids whitespace churn)
+        json.dumps(
+            sorted(
+                (
+                    w.get("url") or "",
+                    (w.get("content") or "")[:200],
+                )
+                for w in sources.get("web_sources") or []
+            ),
+            ensure_ascii=False,
+        ),
+    ]
+    digest.update("\n".join(parts).encode("utf-8"))
+    return digest.hexdigest()[:16]
+
+
+def _existing_intel_hash(
+    conn: psycopg.Connection, game_id: int
+) -> str | None:
+    row = conn.execute(
+        """
+        SELECT metadata->'gameplay_intel'->>'content_hash'
+        FROM games
+        WHERE id = %s
+        """,
+        (game_id,),
+    ).fetchone()
+    return row[0] if row and row[0] else None
+
+
 def _source_breakdown(sources: dict[str, Any]) -> str:
     """Compact per-field diagnostic string for logs."""
     desc = sources.get("editor_intro") or ""
@@ -519,6 +622,18 @@ class GameplayIntelGenerator:
         breakdown = _source_breakdown(sources)
         evidence_count = _estimate_evidence_sources(sources)
 
+        # Content-hash short-circuit: if the input signals haven't changed
+        # since the last successful run, reuse the existing intel without
+        # spending a Sonnet call.
+        new_hash = _content_hash(sources)
+        existing_hash = _existing_intel_hash(conn, game_id)
+        if existing_hash and existing_hash == new_hash:
+            logger.info(
+                f"[gameplay_intel] game {game_id} ({sources['name']}) "
+                f"content hash unchanged ({new_hash}) — skip LLM"
+            )
+            return None
+
         # Zero-evidence path: write a stub record without calling the LLM.
         # Don't silently skip — the dashboard should show "waiting for data"
         # instead of rendering a confusing empty state.
@@ -590,6 +705,7 @@ class GameplayIntelGenerator:
             "prompt_version": PROMPT_VERSION,
             "model_used": model,
             "generated_at": _now_iso(),
+            "content_hash": new_hash,
             # Align shape with stub path so the frontend never has to
             # branch on "missing field" vs "empty list".
             "data_blind_spots": [],

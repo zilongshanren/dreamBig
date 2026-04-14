@@ -37,6 +37,7 @@ class ModelUsage:
     output_tokens: int = 0
     calls: int = 0
     cost_usd: float = 0.0
+    json_retries: int = 0
 
 
 @dataclass
@@ -77,6 +78,10 @@ class CostTracker:
         out_total = sum(u.output_tokens for u in self.by_model.values())
         return in_total, out_total
 
+    def record_json_retry(self, model: str) -> None:
+        """Bump retry counter for chat_json schema-validation failures."""
+        self.by_model[model].json_retries += 1
+
     def reset(self) -> None:
         """Clear all accumulated usage."""
         self.by_model.clear()
@@ -85,8 +90,11 @@ class CostTracker:
         """Human-readable summary line for logs."""
         in_tok, out_tok = self.get_total_tokens()
         total = self.get_total_usd()
+        total_calls = sum(u.calls for u in self.by_model.values())
+        total_retries = sum(u.json_retries for u in self.by_model.values())
+        retry_part = f", {total_retries} JSON retries" if total_retries else ""
         return (
             f"LLM cost ~${total:.4f} "
             f"({in_tok:,} in / {out_tok:,} out tokens across "
-            f"{sum(u.calls for u in self.by_model.values())} calls)"
+            f"{total_calls} calls{retry_part})"
         )

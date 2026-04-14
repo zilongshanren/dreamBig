@@ -9,6 +9,7 @@ no schema change is required — downstream UIs read it directly.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import logging
 
@@ -27,6 +28,7 @@ logger = logging.getLogger(__name__)
 PROMPT_VERSION = PROJECT_ADVICE_PROMPT.version  # "v1"
 MIN_CONFIDENCE = 0.4
 SIMILAR_GAMES_LIMIT = 5
+MIN_POTENTIAL_SCORE = 60  # only spend Sonnet on high-potential games
 
 
 class ProjectAdviceGenerator:
@@ -66,6 +68,19 @@ class ProjectAdviceGenerator:
             logger.info(
                 f"Game {game_id} ({context['game_name']}) already has "
                 f"project_advice v{PROMPT_VERSION}, skipping"
+            )
+            return None
+
+        # 2.5. Content-hash short-circuit: if inputs match the previously
+        # persisted advice, don't burn a Sonnet call.
+        new_hash = _advice_hash(context)
+        if (
+            isinstance(existing_advice, dict)
+            and existing_advice.get("content_hash") == new_hash
+        ):
+            logger.info(
+                f"Project advice inputs unchanged for game {game_id} "
+                f"({context['game_name']}) — hash {new_hash}, skipping LLM"
             )
             return None
 
@@ -109,6 +124,7 @@ class ProjectAdviceGenerator:
         # 6. Merge advice into existing payload and persist
         advice_dict = advice.model_dump()
         advice_dict["prompt_version"] = PROMPT_VERSION
+        advice_dict["content_hash"] = new_hash
 
         merged_payload = dict(context["existing_payload"])
         merged_payload["project_advice"] = advice_dict
@@ -353,6 +369,36 @@ def _build_platform_summary(
 
 
 # ============================================================
+# Content-hash helper
+# ============================================================
+def _advice_hash(context: dict) -> str:
+    """Stable hash of inputs that drive the project advice LLM call."""
+    digest = hashlib.sha256()
+    digest.update(PROMPT_VERSION.encode("utf-8"))
+    digest.update(b"|")
+
+    payload = context.get("existing_payload") or {}
+    # Hash the GameReport's own content_hash if present — that already
+    # captures the upstream report inputs cheaply.
+    upstream_hash = payload.get("content_hash") or ""
+
+    # Similar games — only the IDs (order-stable)
+    similar_ids = sorted(
+        int(g.get("id") or 0) for g in (context.get("similar_games") or [])
+    )
+
+    parts = [
+        context.get("genre") or "",
+        str(context.get("potential_score") or 0),
+        upstream_hash,
+        json.dumps(similar_ids),
+        context.get("platform_summary") or "",
+    ]
+    digest.update("\n".join(parts).encode("utf-8"))
+    return digest.hexdigest()[:16]
+
+
+# ============================================================
 # Eligibility query
 # ============================================================
 def _find_eligible_games(
@@ -361,6 +407,8 @@ def _find_eligible_games(
     """Return (game_id, name) for games with GameReports lacking project_advice.
 
     Ordering: by latest potential score DESC, so highest-value decisions happen first.
+    Filtered to potential_score >= MIN_POTENTIAL_SCORE so we don't spend Sonnet
+    cycles on games unlikely to be greenlit anyway.
     """
     rows = conn.execute(
         """
@@ -378,10 +426,11 @@ def _find_eligible_games(
             gr.payload->'project_advice' IS NULL
             OR gr.payload->'project_advice'->>'prompt_version' IS DISTINCT FROM %s
         )
+          AND COALESCE(ps.overall_score, 0) >= %s
         ORDER BY COALESCE(ps.overall_score, 0) DESC
         LIMIT %s
         """,
-        (PROMPT_VERSION, limit),
+        (PROMPT_VERSION, MIN_POTENTIAL_SCORE, limit),
     ).fetchall()
     return [(r[0], r[1]) for r in rows]
 

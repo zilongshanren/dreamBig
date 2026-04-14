@@ -203,17 +203,23 @@ class PoeClient:
         messages: list[dict[str, str]],
         model: str,
         schema: type[T],
-        max_retries: int = 3,
+        max_retries: int = 2,
         **kwargs: Any,
     ) -> T:
         """Chat completion with structured Pydantic output validation.
 
-        If the model returns invalid JSON or the JSON fails schema validation,
-        we retry up to `max_retries` times, each time appending the error
-        and asking the model to correct its output.
+        On parse failure, retries once with a *minimal* corrective turn —
+        only the system prompt + the previous assistant output + a short
+        fix request. We deliberately do NOT resend the original user
+        payload, since it would double the input cost on every retry and
+        the model already has its own prior output to anchor on.
         """
         # Nudge models that support JSON mode.
         kwargs.setdefault("response_format", {"type": "json_object"})
+
+        # Pull out the system message (if any) once — we keep it on retries
+        # but drop the verbose user payload to save tokens.
+        system_messages = [m for m in messages if m.get("role") == "system"]
 
         working_messages = list(messages)
         last_error: Exception | None = None
@@ -224,9 +230,12 @@ class PoeClient:
 
             try:
                 data = _extract_json(raw)
+                if attempt > 1:
+                    self.cost_tracker.record_json_retry(model)
                 return schema.model_validate(data)
             except (json.JSONDecodeError, ValidationError) as exc:
                 last_error = exc
+                self.cost_tracker.record_json_retry(model)
                 logger.warning(
                     f"[{model}] chat_json attempt {attempt}/{max_retries} "
                     f"failed schema validation: {exc}"
@@ -234,15 +243,14 @@ class PoeClient:
                 if attempt >= max_retries:
                     break
 
-                # Append corrective turn.
-                working_messages = list(messages) + [
+                # Minimal corrective turn — drop the original user payload.
+                working_messages = list(system_messages) + [
                     {"role": "assistant", "content": raw},
                     {
                         "role": "user",
                         "content": (
-                            f"Your previous response failed validation with: {exc}. "
-                            f"Respond again with ONLY valid JSON matching the requested schema. "
-                            f"Do not include any prose, code fences, or explanations."
+                            f"上一次输出无法通过 JSON schema 校验，错误：{exc}。"
+                            f"请只输出符合 schema 的纯 JSON，不要 markdown / 注释 / 解释。"
                         ),
                     },
                 ]

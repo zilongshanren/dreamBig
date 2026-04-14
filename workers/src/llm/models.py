@@ -40,10 +40,12 @@ TIER_MODEL_MAP: dict[ModelTier, PoeModel] = {
 
 
 # Task routing — edit this table when adding new downstream consumers.
+# topic_clustering is text merging + label normalization (no deep reasoning),
+# Haiku handles it fine and is ~5x cheaper than Sonnet.
 TASK_MODEL_MAP: dict[str, PoeModel] = {
     "sentiment_classification": PoeModel.HAIKU,
     "topic_extraction": PoeModel.HAIKU,
-    "topic_clustering": PoeModel.SONNET,
+    "topic_clustering": PoeModel.HAIKU,
     "game_report_generation": PoeModel.SONNET,
     "iaa_advice": PoeModel.SONNET,
     "genre_trend_summary": PoeModel.SONNET,

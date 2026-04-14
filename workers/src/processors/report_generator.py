@@ -8,6 +8,7 @@ are evidence-backed — low-confidence reports are discarded.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import logging
 from datetime import datetime
@@ -21,6 +22,9 @@ from src.llm.prompts.game_report import (
     GameReport as GameReportSchema,
     build_game_report_messages,
 )
+from src.llm.prompts.project_advice import (
+    PROJECT_ADVICE_PROMPT,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -29,12 +33,18 @@ PROMPT_VERSION = GAME_REPORT_PROMPT.version  # "v1"
 # Thresholds
 MIN_REVIEWS_REQUIRED = 10
 MIN_CONFIDENCE_TO_STORE = 0.4  # discard anything below
-MIN_POTENTIAL_SCORE = 50       # only report games with real potential
+MIN_POTENTIAL_SCORE = 60       # only report games with real potential
 
 # Limits on prompt content to keep token usage bounded
 MAX_TOPICS_PER_SENTIMENT = 8
 MAX_REVIEW_TOPICS_FETCHED = 30
 SOCIAL_WINDOW_DAYS = 7
+
+# Inline project_advice merge — populated alongside the report in a single
+# Sonnet call. Cuts roughly half of the per-game LLM cost vs the legacy
+# two-call pipeline. Disable via env if the merged prompt regresses.
+SIMILAR_GAMES_LIMIT = 5
+PROJECT_ADVICE_PROMPT_VERSION = PROJECT_ADVICE_PROMPT.version
 
 
 class ReportGenerator:
@@ -68,13 +78,32 @@ class ReportGenerator:
             logger.info(f"Insufficient context for game {game_id}, skipping report")
             return None
 
-        # 2. Build messages
+        # 1.5. Content-hash short-circuit: skip if inputs are identical to
+        # the previously persisted report. Caches across runs.
+        new_hash = _context_hash(context)
+        try:
+            with psycopg.connect(self.db_url) as conn:
+                if _existing_report_hash(conn, game_id) == new_hash:
+                    logger.info(
+                        f"Report inputs unchanged for game {game_id} "
+                        f"({context['game_name']}) — hash {new_hash}, skipping LLM"
+                    )
+                    return None
+        except psycopg.Error:
+            # Hash check is best-effort; never block generation on it.
+            pass
+
+        # 2. Build messages — merged prompt asks for game_report + project_advice
+        # in a single Sonnet round-trip when we have both potential_score and
+        # similar_games (we always do for eligible games).
         messages = build_game_report_messages(
             game_name=context["game_name"],
             genre=context["genre"],
             platform_summary=context["platform_summary"],
             review_topics=context["review_topics"],
             social_hot_words=context["social_hot_words"],
+            similar_games=context.get("similar_games"),
+            potential_score=context.get("potential_score"),
         )
 
         # 3. Call chat_json
@@ -123,6 +152,7 @@ class ReportGenerator:
                     model_used=self.model,
                     tokens=tokens_used,
                     cost=cost_usd,
+                    content_hash=new_hash,
                 )
                 conn.commit()
         except psycopg.Error as exc:
@@ -185,10 +215,13 @@ class ReportGenerator:
 # Context gathering
 # ============================================================
 def _gather_context(conn: psycopg.Connection, game_id: int) -> dict | None:
-    """Fetch everything needed to render the prompt.
+    """Fetch everything needed to render the merged prompt.
 
     Returns None if the game has insufficient data (no listings, no review
     topics, etc.) — we'd rather skip than ask the LLM to hallucinate.
+
+    Also fetches the inputs needed for the inline project_advice merge:
+    the game's latest potential score and a small list of similar games.
     """
     # 1. Game base info
     game_row = conn.execute(
@@ -263,6 +296,22 @@ def _gather_context(conn: psycopg.Connection, game_id: int) -> dict | None:
 
     social_hot_words = _format_social_signals(social_rows)
 
+    # 5. Project-advice inputs: latest potential score + similar games.
+    # Pulled here so the merged LLM call can produce both deliverables at once.
+    score_row = conn.execute(
+        """
+        SELECT overall_score
+        FROM potential_scores
+        WHERE game_id = %s
+        ORDER BY scored_at DESC
+        LIMIT 1
+        """,
+        (game_id,),
+    ).fetchone()
+    potential_score = int(score_row[0]) if score_row else 0
+
+    similar_games = _fetch_similar_games(conn, game_id)
+
     return {
         "game_name": game_name,
         "genre": genre,
@@ -271,7 +320,90 @@ def _gather_context(conn: psycopg.Connection, game_id: int) -> dict | None:
         "platform_summary": platform_summary,
         "review_topics": review_topics_str,
         "social_hot_words": social_hot_words,
+        "potential_score": potential_score,
+        "similar_games": similar_games,
     }
+
+
+def _fetch_similar_games(
+    conn: psycopg.Connection, game_id: int
+) -> list[dict]:
+    """Fetch up to N similar games for the inline project_advice merge.
+
+    Mirrors the logic in project_advice_generator._fetch_similar_games but
+    swallows all errors — the report should still generate without similar
+    games (the prompt then produces null project_advice).
+    """
+    try:
+        has_embedding = conn.execute(
+            "SELECT 1 FROM game_embeddings WHERE game_id = %s",
+            (game_id,),
+        ).fetchone()
+    except psycopg.Error:
+        has_embedding = None
+
+    if has_embedding is not None:
+        try:
+            rows = conn.execute(
+                """
+                SELECT g.id,
+                       COALESCE(g.name_en, g.name_zh, 'Unknown') AS name,
+                       g.iaa_grade,
+                       COALESCE(ps.overall_score, 0) AS score
+                FROM game_embeddings target
+                JOIN game_embeddings other ON other.game_id != target.game_id
+                JOIN games g ON g.id = other.game_id
+                LEFT JOIN potential_scores ps
+                       ON ps.game_id = g.id AND ps.scored_at = CURRENT_DATE
+                WHERE target.game_id = %s
+                  AND EXISTS (
+                      SELECT 1 FROM game_reports WHERE game_id = g.id
+                  )
+                ORDER BY target.embedding <=> other.embedding
+                LIMIT %s
+                """,
+                (game_id, SIMILAR_GAMES_LIMIT),
+            ).fetchall()
+            return [
+                {
+                    "id": r[0],
+                    "name": r[1],
+                    "iaa_grade": r[2],
+                    "overall_score": int(r[3]) if r[3] is not None else 0,
+                }
+                for r in rows
+            ]
+        except psycopg.Error:
+            pass
+
+    try:
+        rows = conn.execute(
+            """
+            SELECT g.id,
+                   COALESCE(g.name_en, g.name_zh, 'Unknown') AS name,
+                   g.iaa_grade,
+                   COALESCE(ps.overall_score, 0) AS score
+            FROM games g
+            LEFT JOIN potential_scores ps
+                   ON ps.game_id = g.id AND ps.scored_at = CURRENT_DATE
+            WHERE g.id != %s
+              AND g.genre = (SELECT genre FROM games WHERE id = %s)
+            ORDER BY ps.overall_score DESC NULLS LAST
+            LIMIT %s
+            """,
+            (game_id, game_id, SIMILAR_GAMES_LIMIT),
+        ).fetchall()
+        return [
+            {
+                "id": r[0],
+                "name": r[1],
+                "iaa_grade": r[2],
+                "overall_score": int(r[3]) if r[3] is not None else 0,
+            }
+            for r in rows
+        ]
+    except psycopg.Error:
+        return []
 
 
 def _format_platform_summary(rows: list[tuple]) -> str:
@@ -402,6 +534,39 @@ def _fmt_count(n: int | float | None) -> str:
 
 
 # ============================================================
+# Content-hash helpers
+# ============================================================
+def _context_hash(context: dict) -> str:
+    """Stable hash of inputs that drive the LLM output. Re-runs that produce
+    the same hash get short-circuited."""
+    digest = hashlib.sha256()
+    digest.update(PROMPT_VERSION.encode("utf-8"))
+    digest.update(b"|")
+    parts = [
+        context.get("genre") or "",
+        context.get("platform_summary") or "",
+        context.get("review_topics") or "",
+        context.get("social_hot_words") or "",
+    ]
+    digest.update("\n".join(parts).encode("utf-8"))
+    return digest.hexdigest()[:16]
+
+
+def _existing_report_hash(
+    conn: psycopg.Connection, game_id: int
+) -> str | None:
+    row = conn.execute(
+        """
+        SELECT payload->>'content_hash'
+        FROM game_reports
+        WHERE game_id = %s
+        """,
+        (game_id,),
+    ).fetchone()
+    return row[0] if row and row[0] else None
+
+
+# ============================================================
 # Eligibility query
 # ============================================================
 def _find_eligible_games(
@@ -449,18 +614,33 @@ def _persist_report(
     model_used: str,
     tokens: int,
     cost: float,
+    content_hash: str,
 ) -> None:
     """Write GameReport row + update Game structured fields.
 
     Writes are transactional within the caller's connection — caller must
     commit. evidence_count is computed from evidence_refs across the two
-    loop fields.
+    loop fields. The content_hash is stored INSIDE the JSONB payload so
+    the next run can detect "nothing changed" without a schema migration.
     """
     evidence_count = (
         len(payload.core_loop.evidence_refs)
         + len(payload.meta_loop.evidence_refs)
     )
-    payload_json = payload.model_dump_json()
+    payload_dict = payload.model_dump()
+    payload_dict["content_hash"] = content_hash
+
+    # If the merged prompt produced inline project_advice, stamp it with the
+    # legacy prompt_version + content_hash so the standalone advice processor
+    # treats it as already-done and skips it.
+    inline_advice = payload_dict.get("project_advice")
+    if isinstance(inline_advice, dict):
+        inline_advice["prompt_version"] = PROJECT_ADVICE_PROMPT_VERSION
+        inline_advice["content_hash"] = content_hash
+        inline_advice["model_used"] = model_used
+        payload_dict["project_advice"] = inline_advice
+
+    payload_json = json.dumps(payload_dict, ensure_ascii=False, default=str)
     confidence = float(payload.overall_confidence)
 
     conn.execute(
