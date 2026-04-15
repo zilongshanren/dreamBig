@@ -338,11 +338,14 @@ def main():
     # === 12:30: Project advice generation (after daily digest) ===
     scheduler.add_job(enqueue_project_advice, "cron", hour=12, minute=30, id="project_advice")
 
-    # === 13:00 HKT: WeChat IAA intelligence daily briefing (Opus think-tank
-    #                report — runs after scoring + project_advice so it has
-    #                the freshest signals to cross-correlate) ===
+    # === Every 5 days at 13:00 HKT: WeChat IAA intelligence briefing.
+    #     Runs on day 1,6,11,16,21,26 (≈6 runs/month, ~80% token cut vs daily).
+    #     Fires after scoring + project_advice so cross-correlation signals
+    #     are fresh. 5-day cadence aligns with the 7-day rank_momentum /
+    #     market_history windows the prompt already uses. ===
     scheduler.add_job(
-        enqueue_wechat_intelligence, "cron", hour=13, minute=0,
+        enqueue_wechat_intelligence, "cron",
+        day="1,6,11,16,21,26", hour=13, minute=0,
         id="wechat_intelligence",
     )
 

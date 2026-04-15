@@ -503,7 +503,7 @@ function WechatIntelSection({
               智库洞察
             </h2>
             <p className="text-sm text-indigo-700 mt-1">
-              基于当日榜单跨维度信号的 Opus 合成简报 · 每日 13:00 HKT 自动生成
+              基于榜单跨维度信号的合成简报 · 每 5 天 13:00 HKT 自动生成
             </p>
             <p className="text-xs text-gray-500 mt-3">
               暂无今日简报 — 手动触发{" "}
