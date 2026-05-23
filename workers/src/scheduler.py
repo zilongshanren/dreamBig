@@ -292,85 +292,89 @@ def main():
         enqueue_scrape_reviews, "cron", hour=9, minute=0, id="scrape_reviews",
     )
 
-    # === 10:00: Review NLP pipeline (sentiment -> topics -> clustering) ===
-    scheduler.add_job(
-        enqueue_sentiment_classification, "cron", hour=10, minute=0,
-        id="sentiment_classification",
-    )
-    scheduler.add_job(
-        enqueue_topic_extraction, "cron", hour=10, minute=30,
-        id="topic_extraction",
-    )
-    scheduler.add_job(
-        enqueue_topic_clustering, "cron", hour=11, minute=0,
-        id="topic_clustering",
-    )
-
-    # === 11:30: Generate game reports (LLM Opus, expensive, limit=20) ===
-    scheduler.add_job(
-        enqueue_report_generation, "cron", hour=11, minute=30,
-        id="report_generation",
-    )
-
     # === Every 5 minutes: poll for web-triggered manual report generation ===
+    # Manual report path: web UI POST /api/iaa/analyze inserts a scrape_jobs row
+    # with platform='internal', jobType='report_generation'. This poll picks it
+    # up and runs ReportGenerator (which calls Poe Opus). Keep enabled — this
+    # is the ONLY remaining path that consumes Poe.
     scheduler.add_job(
         enqueue_internal_jobs, "interval", minutes=5, id="internal_jobs",
     )
 
-    # === 08:45: Genre aggregation (after scoring) ===
+    # === 08:45: Genre aggregation (no LLM, pure DB rollup) ===
     scheduler.add_job(enqueue_genre_aggregation, "cron", hour=8, minute=45, id="genre_aggregation")
 
-    # === 09:15: Social depth scraping (after review scraping at 09:00) ===
+    # === 09:15: Social depth scraping (no LLM, just scraping) ===
     scheduler.add_job(enqueue_scrape_social_depth, "cron", hour=9, minute=15, id="social_depth")
 
-    # === 11:15: Hook phrase extraction (Haiku, after social depth) ===
-    scheduler.add_job(enqueue_hook_extraction, "cron", hour=11, minute=15, id="hook_extraction")
-
-    # === 12:00: Daily digest (after all pipelines done) ===
+    # === 12:00: Daily digest (no LLM, aggregation only) ===
     scheduler.add_job(enqueue_daily_digest, "cron", hour=12, minute=0, id="daily_digest")
 
-    # === Weekly: embedding refresh (Sunday 3 AM, low-traffic window) ===
-    scheduler.add_job(enqueue_embedding_refresh, "cron", day_of_week="sun", hour=3, minute=0, id="embedding_refresh")
-
-    # === Monday 09:00: Genre weekly report (uses last week's data) ===
-    scheduler.add_job(enqueue_genre_weekly_report, "cron", day_of_week="mon", hour=9, minute=0, id="genre_weekly_report")
-
-    # === 12:30: Project advice generation (after daily digest) ===
-    scheduler.add_job(enqueue_project_advice, "cron", hour=12, minute=30, id="project_advice")
-
-    # === Every 5 days at 13:00 HKT: WeChat IAA intelligence briefing.
-    #     Runs on day 1,6,11,16,21,26 (≈6 runs/month, ~80% token cut vs daily).
-    #     Fires after scoring + project_advice so cross-correlation signals
-    #     are fresh. 5-day cadence aligns with the 7-day rank_momentum /
-    #     market_history windows the prompt already uses. ===
-    scheduler.add_job(
-        enqueue_wechat_intelligence, "cron",
-        day="1,6,11,16,21,26", hour=13, minute=0,
-        id="wechat_intelligence",
-    )
-
-    # === 08:15 HKT: Gameplay intel fact sheets (Sonnet, per-game, 50 games).
-    #                Runs after fetch_details (06:45) so editor_intro /
-    #                screenshots are fresh, and before alerts (08:30). ===
-    scheduler.add_job(
-        enqueue_gameplay_intel, "cron", hour=8, minute=15,
-        id="gameplay_intel",
-    )
-
-    # === Tuesday 02:00: Asset analysis (weekly, low-traffic window, cheap but slow) ===
-    scheduler.add_job(enqueue_asset_analysis, "cron", day_of_week="tue", hour=2, minute=0, id="asset_analysis")
-
-    # === Wednesday 03:00: Trailer hook analysis (weekly, after asset_analysis, bandwidth-heavy) ===
-    scheduler.add_job(enqueue_trailer_analysis, "cron", day_of_week="wed", hour=3, minute=0, id="trailer_analysis")
-
-    # === Every 1 minute: Feishu command processor (bot needs quick response) ===
+    # === Every 1 minute: Feishu command processor (user-initiated commands) ===
     scheduler.add_job(enqueue_feishu_worker, "interval", minutes=1, id="feishu_worker")
 
-    # === 07:15 HKT: Game name EN → ZH translation (after overnight scrapes,
-    #                before scoring so dashboard shows Chinese names) ===
-    scheduler.add_job(
-        enqueue_game_name_translate, "cron", hour=7, minute=15, id="game_name_translate",
-    )
+    # ------------------------------------------------------------------
+    # DISABLED 2026-05-23: All automatic LLM/Poe API consumption is OFF.
+    # Only manual report generation (via web UI → internal_jobs) calls
+    # Poe now. To re-enable any job, uncomment its block and redeploy
+    # `scraper scheduler`.
+    # ------------------------------------------------------------------
+    #
+    # # === 10:00: Review NLP pipeline (sentiment -> topics -> clustering) ===
+    # scheduler.add_job(
+    #     enqueue_sentiment_classification, "cron", hour=10, minute=0,
+    #     id="sentiment_classification",
+    # )
+    # scheduler.add_job(
+    #     enqueue_topic_extraction, "cron", hour=10, minute=30,
+    #     id="topic_extraction",
+    # )
+    # scheduler.add_job(
+    #     enqueue_topic_clustering, "cron", hour=11, minute=0,
+    #     id="topic_clustering",
+    # )
+    #
+    # # === 11:30: Generate game reports (LLM Opus, expensive, limit=20) ===
+    # scheduler.add_job(
+    #     enqueue_report_generation, "cron", hour=11, minute=30,
+    #     id="report_generation",
+    # )
+    #
+    # # === 11:15: Hook phrase extraction (Haiku) ===
+    # scheduler.add_job(enqueue_hook_extraction, "cron", hour=11, minute=15, id="hook_extraction")
+    #
+    # # === Weekly: embedding refresh (OpenAI embeddings, Sunday 3 AM) ===
+    # scheduler.add_job(enqueue_embedding_refresh, "cron", day_of_week="sun", hour=3, minute=0, id="embedding_refresh")
+    #
+    # # === Monday 09:00: Genre weekly report ===
+    # scheduler.add_job(enqueue_genre_weekly_report, "cron", day_of_week="mon", hour=9, minute=0, id="genre_weekly_report")
+    #
+    # # === 12:30: Project advice generation ===
+    # scheduler.add_job(enqueue_project_advice, "cron", hour=12, minute=30, id="project_advice")
+    #
+    # # === Every 5 days at 13:00 HKT: WeChat IAA intelligence briefing ===
+    # scheduler.add_job(
+    #     enqueue_wechat_intelligence, "cron",
+    #     day="1,6,11,16,21,26", hour=13, minute=0,
+    #     id="wechat_intelligence",
+    # )
+    #
+    # # === 08:15 HKT: Gameplay intel fact sheets (Sonnet, per-game, 50 games) ===
+    # scheduler.add_job(
+    #     enqueue_gameplay_intel, "cron", hour=8, minute=15,
+    #     id="gameplay_intel",
+    # )
+    #
+    # # === Tuesday 02:00: Asset analysis (vision LLM, weekly) ===
+    # scheduler.add_job(enqueue_asset_analysis, "cron", day_of_week="tue", hour=2, minute=0, id="asset_analysis")
+    #
+    # # === Wednesday 03:00: Trailer hook analysis (vision LLM, weekly) ===
+    # scheduler.add_job(enqueue_trailer_analysis, "cron", day_of_week="wed", hour=3, minute=0, id="trailer_analysis")
+    #
+    # # === 07:15 HKT: Game name EN → ZH translation (LLM) ===
+    # scheduler.add_job(
+    #     enqueue_game_name_translate, "cron", hour=7, minute=15, id="game_name_translate",
+    # )
 
     logger.info("Scheduler started. Jobs registered:")
     for job in scheduler.get_jobs():
